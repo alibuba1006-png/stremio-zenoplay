@@ -1,0 +1,4 @@
+name = "stremio-zenoplay"
+main = "index.js"
+compatibility_date = "2024-04-01"
+compatibility_flags = [ "nodejs_compat" ]
