@@ -3,6 +3,8 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
 
+const serverless = require('serverless-http');
+
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
 
@@ -295,4 +297,4 @@ app.get('/proxy', async (req, res) => {
 // Закачаме официалния рутер на Stremio
 app.use(getRouter(builder.getInterface()));
 
-module.exports = app;
+module.exports.handler = serverless(app);
