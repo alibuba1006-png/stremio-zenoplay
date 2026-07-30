@@ -297,6 +297,7 @@ app.get('/proxy', async (req, res) => {
 // Закачаме официалния рутер на Stremio
 app.use(getRouter(builder.getInterface()));
 
-app.listen(7000, () => console.log('Server running on port 7000'));
+export default app;
+
 
 
