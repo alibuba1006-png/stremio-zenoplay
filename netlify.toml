@@ -1,7 +1,0 @@
-[build]
-  functions = "api" # Кажете на Netlify къде е кодът ви
-
-[[redirects]]
-  from = "/*"
-  status = 200
-  to = "/.netlify/functions/index/:splat" # Пренасочва трафика от Stremio
