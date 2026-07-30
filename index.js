@@ -1,4 +1,3 @@
-const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
@@ -30,10 +29,12 @@ const manifest = {
     idPrefixes: ['zeno_']
 };
 
-const builder = new addonBuilder(manifest);
 
 // 1. Каталог
-builder.defineCatalogHandler(async ({ type, id, extra }) => {
+app.get('/catalog/:type/:id/:extra?.json', async (req, res) => {
+    const { type, id } = req.params;
+    const extra = req.query;
+
     try {
         let url = `${BASE_URL}/movies/`;
         if (type === 'series') {
@@ -81,7 +82,9 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 });
 
 // 2. Мета данни
-builder.defineMetaHandler(async ({ type, id }) => {
+app.get('/meta/:type/:id.json', async (req, res) => {
+    const { type, id } = req.params;
+
     try {
         const encodedPath = id.replace('zeno_', '');
         const pageLink = Buffer.from(encodedPath, 'base64').toString('utf8');
