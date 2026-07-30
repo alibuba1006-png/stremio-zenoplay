@@ -148,7 +148,9 @@ app.get('/meta/:type/:id.json', async (req, res) => {
 });
 
 // 3. Стрийм хендлър
-builder.defineStreamHandler(async ({ type, id }, req) => {
+app.get('/stream/:type/:id.json', async (req, res) => {
+    const { type, id } = req.params;
+
     try {
         let pageLink = '';
         if (id.includes(':')) {
@@ -295,10 +297,11 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Закачаме официалния рутер на Stremio
-app.use(getRouter(builder.getInterface()));
+app.get('/manifest.json', (req, res) => res.json(manifest));
+app.get('/', (req, res) => res.json(manifest));
 
 export default app;
+
 
 
 
