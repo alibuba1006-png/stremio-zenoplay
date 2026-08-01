@@ -1,12 +1,13 @@
 const { addonBuilder, serveHTTP } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
-const express = permissive = require('express');
+const express = require('express');
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
-const STREMIO_PORT = 7000;
-const PROXY_PORT = 7001;
+
+// Използваме динамичния порт на Render или 7000 за локално тестване
+const PORT = process.env.PORT || 7000;
 
 const manifest = {
     id: 'org.zenoplay.proxy',
@@ -176,8 +177,16 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийм хендлър – взимаме само 1 източник и прескачаме всичко останало
-builder.defineStreamHandler(async ({ type, id }) => {
+// Създаваме Express приложение което ще обслужва и Stremio, и проксито на един порт
+const app = express();
+
+app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    next();
+});
+
+// 3. Стрийм хендлър – автоматично засича публичния хост на Render
+builder.defineStreamHandler(async function ({ type, id }, transportContext) {
     try {
         let pageLink = '';
         
@@ -204,7 +213,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
             if (dataUrl) {
                 const normalizedUrl = dataUrl.startsWith('//') ? 'https:' + dataUrl : dataUrl;
                 
-                // Изключваме категорично morencius още на ниво събиране
                 if (
                     !normalizedUrl.includes('morencius.com') &&
                     (normalizedUrl.includes('ruplayer.org') ||
@@ -223,9 +231,11 @@ builder.defineStreamHandler(async ({ type, id }) => {
             }
         });
 
-        // Строго ограничение до 1 единствен източник
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
+
+        // Определяме динамично хоста (дали е локално или в Render)
+        const host = (transportContext && transportContext.host) || `127.0.0.1:${PORT}`;
 
         for (const player of singlePlayer) {
             const playerTitle = player.title;
@@ -258,7 +268,9 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
-                            const proxyUrl = `http://127.0.0.1:${PROXY_PORT}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
+                            // Използва протокол спрямо заявката (https за Render)
+                            const protocol = host.includes('onrender.com') ? 'https' : 'http';
+                            const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
@@ -292,17 +304,8 @@ builder.defineStreamHandler(async ({ type, id }) => {
     }
 });
 
-// Стартираме Stremio сървъра
-serveHTTP(builder.getInterface(), { port: STREMIO_PORT });
-
-// Прокси сървър за HLS сегменти
-const proxyApp = express();
-proxyApp.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    next();
-});
-
-proxyApp.get('/proxy', async (req, res) => {
+// Прокси руут за HLS сегменти
+app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
     const referer = req.query.referer || `https://${domain}/`;
@@ -329,6 +332,8 @@ proxyApp.get('/proxy', async (req, res) => {
             
             let m3u8Content = response.data;
             const baseUrlObj = new URL(targetUrl);
+            const host = req.get('host');
+            const protocol = req.protocol;
 
             const modifiedLines = m3u8Content.split('\n').map(line => {
                 const trimmed = line.trim();
@@ -341,7 +346,7 @@ proxyApp.get('/proxy', async (req, res) => {
                     segmentUrl = new URL(segmentUrl, baseUrlObj.href).toString();
                 }
 
-                return `http://127.0.0.1:${PROXY_PORT}/proxy?url=${encodeURIComponent(segmentUrl)}&domain=${domain}&referer=${encodeURIComponent(referer)}`;
+                return `${protocol}://${host}/proxy?url=${encodeURIComponent(segmentUrl)}&domain=${domain}&referer=${encodeURIComponent(referer)}`;
             });
 
             return res.send(modifiedLines.join('\n'));
@@ -358,9 +363,12 @@ proxyApp.get('/proxy', async (req, res) => {
     }
 });
 
-proxyApp.listen(PROXY_PORT, () => {
+// Прикачваме Stremio SDK към същото Express приложение
+serveHTTP(builder.getInterface(), { app, cache: 0 });
+
+// Стартираме общия сървър на порт зададен от Render (0.0.0.0 е задължителен за облачни хостинги)
+app.listen(PORT, '0.0.0.0', () => {
     console.log('====================================================');
-    console.log(` Stremio Addon работи на: http://127.0.0.1:${STREMIO_PORT}/manifest.json`);
-    console.log(` Видео проксито работи на: http://127.0.0.1:${PROXY_PORT}`);
+    console.log(` ZenoPlay Addon & Proxy активни на порт: ${PORT}`);
     console.log('====================================================');
 });
