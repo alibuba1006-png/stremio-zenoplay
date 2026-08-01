@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.9',
+    version: '1.4.0', // Вдигаме версията, за да се ресетне кешът в Stremio
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with fixed proxy headers',
+    description: 'Stremio addon with cache buster',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -156,6 +156,8 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
         }
 
         const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
+        console.log(`[DEBUG STREAM] Fetching movie page: ${url}`);
+
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
         const html = response.data;
         const $ = cheerio.load(html);
@@ -186,6 +188,7 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         });
 
+        console.log(`[DEBUG STREAM] Found players count: ${foundPlayers.length}`);
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
@@ -194,6 +197,7 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
         for (const player of singlePlayer) {
             const playerTitle = player.title;
             const playerUrl = player.url;
+            console.log(`[DEBUG STREAM] Processing player: ${playerTitle} -> ${playerUrl}`);
 
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
@@ -209,6 +213,8 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                 if (hash) {
                     try {
                         const postUrl = `https://${domain}/player/index.php?data=${hash}&do=getVideo`;
+                        console.log(`[DEBUG STREAM] Requesting securedLink from: ${postUrl}`);
+
                         const postRes = await axios.post(postUrl, `hash=${hash}&r=${encodeURIComponent(BASE_URL + '/')}`, {
                             headers: {
                                 'User-Agent': UA,
@@ -220,10 +226,12 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                             timeout: 4000
                         });
 
+                        console.log(`[DEBUG STREAM] getVideo response data:`, JSON.stringify(postRes.data));
+
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
-                            // Подаваме правилния домейн и реферер към проксито
-                            const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
+                            // Добавяме уникален параметър към прокси линка, за да избегнем кеширането на самия стрийм
+                            const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}&t=${Date.now()}`;
 
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
@@ -236,6 +244,7 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                             });
                         }
                     } catch (err) {
+                        console.error(`[DEBUG STREAM] getVideo error: ${err.message}`);
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
                             url: playerUrl
@@ -250,6 +259,7 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         }
 
+        console.log(`[DEBUG STREAM] Returning streams:`, JSON.stringify(streams));
         return { streams };
     } catch (e) {
         console.error(`[STREAM HANDLER ERROR]:`, e.message);
@@ -268,6 +278,7 @@ const addonInterface = builder.getInterface();
 
 app.get('/manifest.json', (req, res) => {
     res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.send(addonInterface.manifest);
 });
 
@@ -289,6 +300,7 @@ async function handleAddonReq(req, res) {
             extraParsed.proxyUrlBase = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `${protocol}://${host}`;
             
             const resp = await addonInterface.get('stream', type, id, extraParsed);
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             return res.json(resp);
         }
         if (resource === 'catalog') {
@@ -297,6 +309,7 @@ async function handleAddonReq(req, res) {
         }
         if (resource === 'meta') {
             const resp = await addonInterface.get('meta', type, id);
+            res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             return res.json(resp);
         }
         res.status(404).send('Not found');
@@ -312,7 +325,6 @@ app.get('/:resource/:type/:id.json', (req, res) => {
     return handleAddonReq(req, res);
 });
 
-// Подобрен прокси рутер с правилни хедъри за стрийминг
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -321,6 +333,8 @@ app.get('/proxy', async (req, res) => {
     if (!targetUrl) {
         return res.status(400).send('Missing url parameter');
     }
+
+    console.log(`[PROXY REQUEST] Target: ${targetUrl}`);
 
     try {
         const response = await axios.get(targetUrl, {
@@ -335,6 +349,7 @@ app.get('/proxy', async (req, res) => {
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
         const protocol = req.headers['x-forwarded-proto'] || 'https';
         const host = req.headers['host'];
@@ -380,7 +395,7 @@ app.get('/', (req, res) => {
     <html>
         <head><title>ZenoPlay Addon</title></head>
         <body style="font-family: Arial; text-align: center; margin-top: 50px;">
-            <h1>ZenoPlay Stremio Addon е активен!</h1>
+            <h1>ZenoPlay Stremio Addon е активен! (v1.4.0)</h1>
             <p><a href="/manifest.json" style="font-size: 20px; color: #0066cc;">Инсталирай в Stremio (Кликни тук)</a></p>
         </body>
     </html>`);
