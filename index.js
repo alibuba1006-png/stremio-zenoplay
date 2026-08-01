@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.9',
+    version: '1.4.1',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with strictly single source',
+    description: 'Stremio addon with forced proxy streams',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -166,7 +166,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийм хендлър с безопасно извличане на хоста
+// 3. Стрийм хендлър с принудително минаване през проксито
 builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
     try {
         let pageLink = '';
@@ -212,20 +212,17 @@ builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
             }
         });
 
-        const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
-        // Безопасно определяне на базовия прокси URL
         let baseProxyUrl = '';
         if (extraArgs && extraArgs.headers && extraArgs.headers['host']) {
             const protocol = extraArgs.headers['x-forwarded-proto'] || 'https';
             baseProxyUrl = `${protocol}://${extraArgs.headers['host']}`;
         } else {
-            // Фолбек, ако заявката е директна през SDK-то
             baseProxyUrl = `https://${process.env.VERCEL_URL || 'localhost:7000'}`;
         }
 
-        for (const player of singlePlayer) {
+        for (const player of foundPlayers) {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
@@ -259,26 +256,24 @@ builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
                             const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
                             streams.push({
-                                title: `ZenoPlay - ${playerTitle} (Proxy)`,
+                                title: `▶ ZenoPlay - ${playerTitle} (Proxy)`,
                                 url: proxyUrl
-                            });
-                        } else {
-                            streams.push({
-                                title: `ZenoPlay - ${playerTitle} (Web)`,
-                                url: playerUrl
                             });
                         }
                     } catch (err) {
+                        // Ако заявката към getVideo не мине, пращаме самия плейър през проксито като фолбек
+                        const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(playerUrl)}&domain=${domain}&referer=${encodeURIComponent(BASE_URL + '/')}`;
                         streams.push({
-                            title: `ZenoPlay - ${playerTitle} (Web)`,
-                            url: playerUrl
+                            title: `▶ ZenoPlay - ${playerTitle} (Fallback)`,
+                            url: proxyUrl
                         });
                     }
                 }
             } else {
+                const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(playerUrl)}`;
                 streams.push({
-                    title: `ZenoPlay - ${playerTitle} (Web)`,
-                    url: playerUrl
+                    title: `▶ ZenoPlay - ${playerTitle} (Proxy)`,
+                    url: proxyUrl
                 });
             }
         }
@@ -305,7 +300,6 @@ app.get('/manifest.json', (req, res) => {
     res.send(addonInterface.manifest);
 });
 
-// Обща функция за обработка на заявките към аддона
 async function handleAddonReq(req, res) {
     const { resource, type, id, extra } = req.params;
     let extraParsed = {};
@@ -326,7 +320,6 @@ async function handleAddonReq(req, res) {
             return res.json(resp);
         }
         if (resource === 'stream') {
-            // Предаваме целия обекта на заявката (req), за да могат хедърите да се използват в стрийм хендлъра
             const resp = await addonInterface.get('stream', type, id, {}, req);
             return res.json(resp);
         }
@@ -337,14 +330,13 @@ async function handleAddonReq(req, res) {
     }
 }
 
-// Рутове съвместими с новия Express (path-to-regexp)
 app.get('/:resource/:type/:id/:extra.json', handleAddonReq);
 app.get('/:resource/:type/:id.json', (req, res) => {
     req.params.extra = null;
     return handleAddonReq(req, res);
 });
 
-// Прокси рутер за HLS сегменти
+// Прокси рутер за потоци и HLS сегменти
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -405,7 +397,6 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Начална страница
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html>
     <html>
