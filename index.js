@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.7',
+    version: '1.3.8',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with strictly single source',
+    description: 'Stremio addon with detailed debug logs',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -32,7 +32,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// 1. Каталог с филтриране по тип
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
         let url = `${BASE_URL}/movies/`;
@@ -76,12 +75,11 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 
         return { metas };
     } catch (e) {
-        console.error(`[CATALOG ERROR]:`, e);
+        console.error(`[CATALOG ERROR]:`, e.message);
         return { metas: [] };
     }
 });
 
-// 2. Мета данни с миниатюри за епизодите
 builder.defineMetaHandler(async ({ type, id }) => {
     try {
         const encodedPath = id.replace('zeno_', '');
@@ -106,7 +104,6 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
         if (type === 'series') {
             const videos = [];
-            
             $('.episodess a, .les-episod a, .seasons-dropdown a, .episode-item a, ul.episodess li a, .e-item a, .les-m a, .numeros a').each((i, el) => {
                 const epLink = $(el).attr('href');
                 let epThumbnail = $(el).find('img').attr('src') || $(el).attr('data-img') || poster;
@@ -135,25 +132,6 @@ builder.defineMetaHandler(async ({ type, id }) => {
                 }
             });
 
-            if (videos.length === 0) {
-                $('a').each((i, el) => {
-                    const href = $(el).attr('href');
-                    let text = $(el).text().replace(/play_circle/gi, '').trim();
-                    let epThumbnail = $(el).find('img').attr('src') || poster;
-                    if (epThumbnail && epThumbnail.startsWith('//')) epThumbnail = 'https:' + epThumbnail;
-
-                    if (href && (href.includes('/episode/') || href.includes('/tv-episode/') || href.includes('epizod') || text.toLowerCase().includes('епизод'))) {
-                        videos.push({
-                            id: id + ':' + Buffer.from(href).toString('base64').replace(/=/g, ''),
-                            title: text || `Епизод ${videos.length + 1}`,
-                            season: 1,
-                            episode: videos.length + 1,
-                            thumbnail: epThumbnail
-                        });
-                    }
-                });
-            }
-
             if (videos.length > 0) {
                 meta.videos = videos;
             }
@@ -161,27 +139,25 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
         return { meta };
     } catch (e) {
-        console.error(`[META ERROR]:`, e);
+        console.error(`[META ERROR]:`, e.message);
         return { meta: { id, type, name: "Грешка при зареждане" } };
     }
 });
 
-// 3. Стрийм хендлър
-// ВАЖНО: Вече приемаме baseProxyUrl директно от обекта `extra`, който сме попълнили в Express
 builder.defineStreamHandler(async ({ type, id, extra }) => {
     try {
         let pageLink = '';
-        
         if (id.includes(':')) {
             const parts = id.split(':');
-            const encodedEpPath = parts[1];
-            pageLink = Buffer.from(encodedEpPath, 'base64').toString('utf8');
+            pageLink = Buffer.from(parts[1], 'base64').toString('utf8');
         } else {
             const encodedPath = id.replace('zeno_', '');
             pageLink = Buffer.from(encodedPath, 'base64').toString('utf8');
         }
 
         const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
+        console.log(`[DEBUG STREAM] Fetching movie page: ${url}`);
+
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
         const html = response.data;
         const $ = cheerio.load(html);
@@ -194,7 +170,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             
             if (dataUrl) {
                 const normalizedUrl = dataUrl.startsWith('//') ? 'https:' + dataUrl : dataUrl;
-                
                 if (
                     !normalizedUrl.includes('morencius.com') &&
                     (normalizedUrl.includes('ruplayer.org') ||
@@ -213,15 +188,16 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         });
 
+        console.log(`[DEBUG STREAM] Found players count: ${foundPlayers.length}`);
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
-        // Взимаме Vercel URL-а, който сме предали от Express, или ползваме локален резервен
         const baseProxyUrl = (extra && extra.proxyUrlBase) ? extra.proxyUrlBase : 'http://127.0.0.1:7000';
 
         for (const player of singlePlayer) {
             const playerTitle = player.title;
             const playerUrl = player.url;
+            console.log(`[DEBUG STREAM] Processing player: ${playerTitle} -> ${playerUrl}`);
 
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
@@ -237,6 +213,8 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                 if (hash) {
                     try {
                         const postUrl = `https://${domain}/player/index.php?data=${hash}&do=getVideo`;
+                        console.log(`[DEBUG STREAM] Requesting securedLink from: ${postUrl}`);
+
                         const postRes = await axios.post(postUrl, `hash=${hash}&r=${encodeURIComponent(BASE_URL + '/')}`, {
                             headers: {
                                 'User-Agent': UA,
@@ -245,8 +223,10 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                                 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
                                 'X-Requested-With': 'XMLHttpRequest'
                             },
-                            timeout: 3000
+                            timeout: 4000
                         });
+
+                        console.log(`[DEBUG STREAM] getVideo response data:`, JSON.stringify(postRes.data));
 
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
@@ -263,6 +243,7 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                             });
                         }
                     } catch (err) {
+                        console.error(`[DEBUG STREAM] getVideo error: ${err.message}`);
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
                             url: playerUrl
@@ -277,14 +258,14 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         }
 
+        console.log(`[DEBUG STREAM] Returning streams:`, JSON.stringify(streams));
         return { streams };
     } catch (e) {
-        console.error(`[STREAM HANDLER ERROR]:`, e);
+        console.error(`[STREAM HANDLER ERROR]:`, e.message);
         return { streams: [] };
     }
 });
 
-// Създаване на Express приложение за Vercel
 const app = express();
 
 app.use((req, res, next) => {
@@ -292,7 +273,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Stremio роутинг през SDK интерфейса
 const addonInterface = builder.getInterface();
 
 app.get('/manifest.json', (req, res) => {
@@ -300,7 +280,6 @@ app.get('/manifest.json', (req, res) => {
     res.send(addonInterface.manifest);
 });
 
-// Обща функция за обработка
 async function handleAddonReq(req, res) {
     const { resource, type, id, extra } = req.params;
     let extraParsed = {};
@@ -314,8 +293,6 @@ async function handleAddonReq(req, res) {
 
     try {
         if (resource === 'stream') {
-            // ВАЖНО: Тук сме в Express и имаме пълния req. Взимаме Vercel хоста и го
-            // натъпкваме в extraParsed, за да може Stremio SDK-то да го препрати на стрийм хендлъра!
             const protocol = req.headers['x-forwarded-proto'] || 'https';
             const host = req.headers['host'];
             extraParsed.proxyUrlBase = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `${protocol}://${host}`;
@@ -333,19 +310,17 @@ async function handleAddonReq(req, res) {
         }
         res.status(404).send('Not found');
     } catch (e) {
-        console.error(e);
+        console.error(`[ADDON REQ ERROR]:`, e.message);
         res.status(500).send('Internal Server Error');
     }
 }
 
-// ВАЖНО ЗА VERCEL: Разделяме роутовете на два, защото понякога optional параметрите (?:extra) чупят сървърлеса
 app.get('/:resource/:type/:id/:extra.json', handleAddonReq);
 app.get('/:resource/:type/:id.json', (req, res) => {
     req.params.extra = null;
     return handleAddonReq(req, res);
 });
 
-// Прокси рутер за HLS сегменти
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -355,6 +330,8 @@ app.get('/proxy', async (req, res) => {
         return res.status(400).send('Missing url parameter');
     }
 
+    console.log(`[PROXY REQUEST] Target: ${targetUrl}`);
+
     try {
         const response = await axios.get(targetUrl, {
             headers: {
@@ -362,7 +339,8 @@ app.get('/proxy', async (req, res) => {
                 'Referer': referer,
                 'Origin': `https://${domain}`
             },
-            responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream'
+            responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream',
+            timeout: 10000
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
@@ -401,12 +379,11 @@ app.get('/proxy', async (req, res) => {
         response.data.pipe(res);
 
     } catch (error) {
-        console.error(`[PROXY ERROR]:`, error.message);
+        console.error(`[PROXY ERROR] Failed to fetch ${targetUrl}: ${error.message}`);
         res.status(500).send('Proxy error');
     }
 });
 
-// Начална страница
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html>
     <html>
@@ -418,7 +395,6 @@ app.get('/', (req, res) => {
     </html>`);
 });
 
-// За локално тестване извън Vercel
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 7000;
     app.listen(PORT, () => {
@@ -426,5 +402,4 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
-// Изключително важно за Vercel безсерверната среда:
 module.exports = app;
