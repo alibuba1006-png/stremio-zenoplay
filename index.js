@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.2',
-    name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon supporting all player types',
+    version: '1.4.3',
+    name: 'ZenoPlay Direct',
+    description: 'Stremio addon with direct player links',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -144,7 +144,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-builder.defineStreamHandler(async ({ type, id, extra }) => {
+builder.defineStreamHandler(async ({ type, id }) => {
     try {
         let pageLink = '';
         if (id.includes(':')) {
@@ -168,7 +168,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             
             if (dataUrl) {
                 const normalizedUrl = dataUrl.startsWith('//') ? 'https:' + dataUrl : dataUrl;
-                // Връщаме пълното покритие на всички възможни стрийминг домейни (включително morencius и ruplayer)
                 if (
                     normalizedUrl.includes('morencius.com') ||
                     normalizedUrl.includes('ruplayer.org') ||
@@ -188,24 +187,19 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
         });
 
         const streams = [];
-        const baseProxyUrl = (extra && extra.proxyUrlBase) ? extra.proxyUrlBase : 'http://127.0.0.1:7000';
 
         for (const player of foundPlayers) {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
-            // Ако е morencius.com или директен m3u8 линк - го пускаме директно през проксито
+            // Ако е директен m3u8 или morencius - го подаваме директно
             if (playerUrl.includes('morencius.com') || playerUrl.includes('.m3u8')) {
-                const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
-                const domain = domainMatch ? domainMatch[1] : 'morencius.com';
-                const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(playerUrl)}&domain=${domain}&referer=${encodeURIComponent(BASE_URL + '/')}&t=${Date.now()}`;
-                
                 streams.push({
-                    title: `ZenoPlay - ${playerTitle} (Direct Proxy)`,
-                    url: proxyUrl
+                    title: `ZenoPlay - ${playerTitle} (Direct)`,
+                    url: playerUrl
                 });
             } 
-            // Ако е ruplayer / vidplayer - правим традиционната логика с getVideo
+            // Ако е ruplayer - взимаме securedLink и го подаваме директно на Stremio
             else if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
                 const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
@@ -232,16 +226,20 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                         });
 
                         if (postRes.data && postRes.data.securedLink) {
-                            const targetMasterUrl = postRes.data.securedLink;
-                            const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}&t=${Date.now()}`;
-
                             streams.push({
-                                title: `ZenoPlay - ${playerTitle} (RuPlayer Proxy)`,
-                                url: proxyUrl
+                                title: `ZenoPlay - ${playerTitle} (Secured)`,
+                                url: postRes.data.securedLink,
+                                behaviorHints: {
+                                    notWebReady: true // Казва на Stremio да отвори външен плеър, ако уеб версията блокира хедърите
+                                }
                             });
                         }
                     } catch (err) {
-                        // fallback
+                        // fallback към оригиналния линк
+                        streams.push({
+                            title: `ZenoPlay - ${playerTitle} (Web)`,
+                            url: playerUrl
+                        });
                     }
                 }
             }
@@ -282,10 +280,6 @@ async function handleAddonReq(req, res) {
 
     try {
         if (resource === 'stream') {
-            const protocol = req.headers['x-forwarded-proto'] || 'https';
-            const host = req.headers['host'];
-            extraParsed.proxyUrlBase = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `${protocol}://${host}`;
-            
             const resp = await addonInterface.get('stream', type, id, extraParsed);
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             return res.json(resp);
@@ -299,7 +293,7 @@ async function handleAddonReq(req, res) {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             return res.json(resp);
         }
-        res.status(404).send('Not found');
+        res.status(454).send('Not found');
     } catch (e) {
         console.error(`[ADDON REQ ERROR]:`, e.message);
         res.status(500).send('Internal Server Error');
@@ -312,75 +306,12 @@ app.get('/:resource/:type/:id.json', (req, res) => {
     return handleAddonReq(req, res);
 });
 
-app.get('/proxy', async (req, res) => {
-    const targetUrl = req.query.url;
-    const domain = req.query.domain || 'morencius.com';
-    const referer = req.query.referer || `https://${domain}/`;
-
-    if (!targetUrl) {
-        return res.status(400).send('Missing url parameter');
-    }
-
-    try {
-        const response = await axios.get(targetUrl, {
-            headers: {
-                'User-Agent': UA,
-                'Referer': referer,
-                'Origin': `https://${domain}`,
-                'Accept': '*/*'
-            },
-            responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream',
-            timeout: 15000
-        });
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-
-        const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const host = req.headers['host'];
-        const baseProxyUrl = `${protocol}://${host}`;
-
-        const contentType = response.headers['content-type'] || '';
-        if (targetUrl.includes('.m3u8') || contentType.includes('mpegurl') || typeof response.data === 'string') {
-            res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
-            
-            let m3u8Content = response.data;
-            const baseUrlObj = new URL(targetUrl);
-
-            const modifiedLines = m3u8Content.split('\n').map(line => {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#')) {
-                    return line;
-                }
-
-                let segmentUrl = trimmed;
-                if (!segmentUrl.startsWith('http')) {
-                    segmentUrl = new URL(segmentUrl, baseUrlObj.href).toString();
-                }
-
-                return `${baseProxyUrl}/proxy?url=${encodeURIComponent(segmentUrl)}&domain=${domain}&referer=${encodeURIComponent(referer)}`;
-            });
-
-            return res.send(modifiedLines.join('\n'));
-        }
-
-        if (response.headers['content-type']) {
-            res.setHeader('Content-Type', response.headers['content-type']);
-        }
-        response.data.pipe(res);
-
-    } catch (error) {
-        console.error(`[PROXY ERROR] Failed to fetch ${targetUrl}: ${error.message}`);
-        res.status(500).send('Proxy error');
-    }
-});
-
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html>
     <html>
         <head><title>ZenoPlay Addon</title></head>
         <body style="font-family: Arial; text-align: center; margin-top: 50px;">
-            <h1>ZenoPlay Stremio Addon е активен! (v1.4.2)</h1>
+            <h1>ZenoPlay Stremio Addon е активен! (v1.4.3)</h1>
             <p><a href="/manifest.json" style="font-size: 20px; color: #0066cc;">Инсталирай в Stremio (Кликни тук)</a></p>
         </body>
     </html>`);
