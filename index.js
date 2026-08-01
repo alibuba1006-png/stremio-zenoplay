@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.1',
+    version: '1.3.7',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with forced proxy streams',
+    description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -166,8 +166,9 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийм хендлър с принудително минаване през проксито
-builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
+// 3. Стрийм хендлър
+// ВАЖНО: Вече приемаме baseProxyUrl директно от обекта `extra`, който сме попълнили в Express
+builder.defineStreamHandler(async ({ type, id, extra }) => {
     try {
         let pageLink = '';
         
@@ -212,17 +213,13 @@ builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
             }
         });
 
+        const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
-        let baseProxyUrl = '';
-        if (extraArgs && extraArgs.headers && extraArgs.headers['host']) {
-            const protocol = extraArgs.headers['x-forwarded-proto'] || 'https';
-            baseProxyUrl = `${protocol}://${extraArgs.headers['host']}`;
-        } else {
-            baseProxyUrl = `https://${process.env.VERCEL_URL || 'localhost:7000'}`;
-        }
+        // Взимаме Vercel URL-а, който сме предали от Express, или ползваме локален резервен
+        const baseProxyUrl = (extra && extra.proxyUrlBase) ? extra.proxyUrlBase : 'http://127.0.0.1:7000';
 
-        for (const player of foundPlayers) {
+        for (const player of singlePlayer) {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
@@ -256,24 +253,26 @@ builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
                             const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
                             streams.push({
-                                title: `▶ ZenoPlay - ${playerTitle} (Proxy)`,
+                                title: `ZenoPlay - ${playerTitle} (Proxy)`,
                                 url: proxyUrl
+                            });
+                        } else {
+                            streams.push({
+                                title: `ZenoPlay - ${playerTitle} (Web)`,
+                                url: playerUrl
                             });
                         }
                     } catch (err) {
-                        // Ако заявката към getVideo не мине, пращаме самия плейър през проксито като фолбек
-                        const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(playerUrl)}&domain=${domain}&referer=${encodeURIComponent(BASE_URL + '/')}`;
                         streams.push({
-                            title: `▶ ZenoPlay - ${playerTitle} (Fallback)`,
-                            url: proxyUrl
+                            title: `ZenoPlay - ${playerTitle} (Web)`,
+                            url: playerUrl
                         });
                     }
                 }
             } else {
-                const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(playerUrl)}`;
                 streams.push({
-                    title: `▶ ZenoPlay - ${playerTitle} (Proxy)`,
-                    url: proxyUrl
+                    title: `ZenoPlay - ${playerTitle} (Web)`,
+                    url: playerUrl
                 });
             }
         }
@@ -293,6 +292,7 @@ app.use((req, res, next) => {
     next();
 });
 
+// Stremio роутинг през SDK интерфейса
 const addonInterface = builder.getInterface();
 
 app.get('/manifest.json', (req, res) => {
@@ -300,9 +300,11 @@ app.get('/manifest.json', (req, res) => {
     res.send(addonInterface.manifest);
 });
 
+// Обща функция за обработка
 async function handleAddonReq(req, res) {
     const { resource, type, id, extra } = req.params;
     let extraParsed = {};
+    
     if (extra) {
         extra.split('&').forEach(part => {
             const [key, value] = part.split('=');
@@ -311,16 +313,22 @@ async function handleAddonReq(req, res) {
     }
 
     try {
+        if (resource === 'stream') {
+            // ВАЖНО: Тук сме в Express и имаме пълния req. Взимаме Vercel хоста и го
+            // натъпкваме в extraParsed, за да може Stremio SDK-то да го препрати на стрийм хендлъра!
+            const protocol = req.headers['x-forwarded-proto'] || 'https';
+            const host = req.headers['host'];
+            extraParsed.proxyUrlBase = process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : `${protocol}://${host}`;
+            
+            const resp = await addonInterface.get('stream', type, id, extraParsed);
+            return res.json(resp);
+        }
         if (resource === 'catalog') {
             const resp = await addonInterface.get('catalog', type, id, extraParsed);
             return res.json(resp);
         }
         if (resource === 'meta') {
             const resp = await addonInterface.get('meta', type, id);
-            return res.json(resp);
-        }
-        if (resource === 'stream') {
-            const resp = await addonInterface.get('stream', type, id, {}, req);
             return res.json(resp);
         }
         res.status(404).send('Not found');
@@ -330,13 +338,14 @@ async function handleAddonReq(req, res) {
     }
 }
 
+// ВАЖНО ЗА VERCEL: Разделяме роутовете на два, защото понякога optional параметрите (?:extra) чупят сървърлеса
 app.get('/:resource/:type/:id/:extra.json', handleAddonReq);
 app.get('/:resource/:type/:id.json', (req, res) => {
     req.params.extra = null;
     return handleAddonReq(req, res);
 });
 
-// Прокси рутер за потоци и HLS сегменти
+// Прокси рутер за HLS сегменти
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -397,6 +406,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
+// Начална страница
 app.get('/', (req, res) => {
     res.send(`<!DOCTYPE html>
     <html>
@@ -408,6 +418,7 @@ app.get('/', (req, res) => {
     </html>`);
 });
 
+// За локално тестване извън Vercel
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 7000;
     app.listen(PORT, () => {
@@ -415,4 +426,5 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
+// Изключително важно за Vercel безсерверната среда:
 module.exports = app;
