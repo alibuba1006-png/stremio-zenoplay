@@ -8,7 +8,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.8',
+    version: '1.3.9',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
@@ -166,8 +166,8 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийм хендлър
-builder.defineStreamHandler(async ({ type, id }, req) => {
+// 3. Стрийм хендлър с безопасно извличане на хоста
+builder.defineStreamHandler(async ({ type, id }, extraArgs) => {
     try {
         let pageLink = '';
         
@@ -215,9 +215,15 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
-        const protocol = req.headers['x-forwarded-proto'] || 'https';
-        const host = req.headers['host'];
-        const baseProxyUrl = `${protocol}://${host}`;
+        // Безопасно определяне на базовия прокси URL
+        let baseProxyUrl = '';
+        if (extraArgs && extraArgs.headers && extraArgs.headers['host']) {
+            const protocol = extraArgs.headers['x-forwarded-proto'] || 'https';
+            baseProxyUrl = `${protocol}://${extraArgs.headers['host']}`;
+        } else {
+            // Фолбек, ако заявката е директна през SDK-то
+            baseProxyUrl = `https://${process.env.VERCEL_URL || 'localhost:7000'}`;
+        }
 
         for (const player of singlePlayer) {
             const playerTitle = player.title;
@@ -320,6 +326,7 @@ async function handleAddonReq(req, res) {
             return res.json(resp);
         }
         if (resource === 'stream') {
+            // Предаваме целия обекта на заявката (req), за да могат хедърите да се използват в стрийм хендлъра
             const resp = await addonInterface.get('stream', type, id, {}, req);
             return res.json(resp);
         }
@@ -330,7 +337,7 @@ async function handleAddonReq(req, res) {
     }
 }
 
-// Разделени рутове за съвместимост с новия path-to-regexp в Express
+// Рутове съвместими с новия Express (path-to-regexp)
 app.get('/:resource/:type/:id/:extra.json', handleAddonReq);
 app.get('/:resource/:type/:id.json', (req, res) => {
     req.params.extra = null;
