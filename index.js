@@ -3,14 +3,14 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
 
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36";
 const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.3',
+    version: '1.4.4',
     name: 'ZenoPlay Direct',
-    description: 'Stremio addon with direct player links',
+    description: 'Stremio addon with native proxy headers',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -75,7 +75,6 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
 
         return { metas };
     } catch (e) {
-        console.error(`[CATALOG ERROR]:`, e.message);
         return { metas: [] };
     }
 });
@@ -139,7 +138,6 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
         return { meta };
     } catch (e) {
-        console.error(`[META ERROR]:`, e.message);
         return { meta: { id, type, name: "Грешка при зареждане" } };
     }
 });
@@ -192,14 +190,27 @@ builder.defineStreamHandler(async ({ type, id }) => {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
-            // Ако е директен m3u8 или morencius - го подаваме директно
+            // Логика за Morencius (Вторият плеър)
             if (playerUrl.includes('morencius.com') || playerUrl.includes('.m3u8')) {
+                const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
+                const domain = domainMatch ? domainMatch[1] : 'morencius.com';
+                
                 streams.push({
                     title: `ZenoPlay - ${playerTitle} (Direct)`,
-                    url: playerUrl
+                    url: playerUrl,
+                    behaviorHints: {
+                        notWebReady: true,
+                        proxyHeaders: {
+                            request: {
+                                "User-Agent": UA,
+                                "Referer": playerUrl,
+                                "Origin": `https://${domain}`
+                            }
+                        }
+                    }
                 });
             } 
-            // Ако е ruplayer - взимаме securedLink и го подаваме директно на Stremio
+            // Логика за Ruplayer (Първият плеър)
             else if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
                 const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
@@ -230,16 +241,19 @@ builder.defineStreamHandler(async ({ type, id }) => {
                                 title: `ZenoPlay - ${playerTitle} (Secured)`,
                                 url: postRes.data.securedLink,
                                 behaviorHints: {
-                                    notWebReady: true // Казва на Stremio да отвори външен плеър, ако уеб версията блокира хедърите
+                                    notWebReady: true, // Кара Stremio Web да го отвори във външен плеър, а Desktop си го пуска вътре
+                                    proxyHeaders: {
+                                        request: {
+                                            "User-Agent": UA,
+                                            "Referer": playerUrl,
+                                            "Origin": `https://${domain}`
+                                        }
+                                    }
                                 }
                             });
                         }
                     } catch (err) {
-                        // fallback към оригиналния линк
-                        streams.push({
-                            title: `ZenoPlay - ${playerTitle} (Web)`,
-                            url: playerUrl
-                        });
+                        // fallback
                     }
                 }
             }
@@ -247,7 +261,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
 
         return { streams };
     } catch (e) {
-        console.error(`[STREAM HANDLER ERROR]:`, e.message);
         return { streams: [] };
     }
 });
@@ -293,9 +306,8 @@ async function handleAddonReq(req, res) {
             res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
             return res.json(resp);
         }
-        res.status(454).send('Not found');
+        res.status(404).send('Not found');
     } catch (e) {
-        console.error(`[ADDON REQ ERROR]:`, e.message);
         res.status(500).send('Internal Server Error');
     }
 }
@@ -311,7 +323,7 @@ app.get('/', (req, res) => {
     <html>
         <head><title>ZenoPlay Addon</title></head>
         <body style="font-family: Arial; text-align: center; margin-top: 50px;">
-            <h1>ZenoPlay Stremio Addon е активен! (v1.4.3)</h1>
+            <h1>ZenoPlay Stremio Addon е активен! (v1.4.4)</h1>
             <p><a href="/manifest.json" style="font-size: 20px; color: #0066cc;">Инсталирай в Stremio (Кликни тук)</a></p>
         </body>
     </html>`);
