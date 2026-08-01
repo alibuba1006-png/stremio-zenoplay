@@ -1,11 +1,10 @@
 const { addonBuilder, getRouter } = require("stremio-addon-sdk");
 const express = require("express");
 const axios = require("axios");
-const cheerio = require("cheerio");
 
 const app = express();
 
-// 1. Дефиниране на Stremio манифеста
+// 1. Дефиниране на Stremio манифеста и функционалностите
 const builder = new addonBuilder({
     id: "org.zenoplay.stremio",
     version: "1.0.0",
@@ -16,21 +15,14 @@ const builder = new addonBuilder({
     resources: ["stream"]
 });
 
-// 2. Дефиниране на стрийм хандлъра
+// 2. Обработчик на стриймовете
 builder.defineStreamHandler(async function(args) {
     try {
         const { type, id } = args;
         console.log(`Заявка за стрийъм - Тип: ${type}, ID: ${id}`);
-
-        // Тук се поставя логиката за извличане от zenoplay.to
+        
+        // Тук ще се добавя лоцирането и извличането от zenoplay.to
         const streams = [];
-
-        // Пример за добавяне на стрийъм, който минава през нашия прокси рутер
-        // const proxyUrl = `https://${process.env.RENDER_EXTERNAL_URL || 'localhost:10000'}/proxy?url=${encodeURIComponent(targetVideoUrl)}`
-        // streams.push({
-        //     title: "ZenoPlay Stream",
-        //     url: proxyUrl
-        // });
 
         return { streams };
     } catch (error) {
@@ -39,10 +31,10 @@ builder.defineStreamHandler(async function(args) {
     }
 });
 
-// 3. Интегриране на Stremio рутера в Express приложението
-app.use(getRouter());
+// 3. Свързване на Stremio интерфейса към Express приложението
+app.use(getRouter(builder.getInterface()));
 
-// 4. Допълнителен рутер за проксиране на HLS сегменти/глави (по избор)
+// 4. Допълнителен прокси маршрут за HLS стриймове
 app.get("/proxy", async (req, res) => {
     try {
         const targetUrl = req.query.url;
@@ -67,7 +59,7 @@ app.get("/proxy", async (req, res) => {
     }
 });
 
-// 5. Стартиране на сървъра на задължителния порт за Render (0.0.0.0)
+// 5. Стартиране на уеб сървъра на задължителния за Render порт и адрес
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`====================================================`);
