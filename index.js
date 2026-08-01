@@ -4,24 +4,45 @@ const axios = require("axios");
 
 const app = express();
 
-// 1. Дефиниране на Stremio манифеста и функционалностите
+// 1. Дефиниране на Stremio манифеста с дефиниран каталог за филми
 const builder = new addonBuilder({
     id: "org.zenoplay.stremio",
     version: "1.0.0",
     name: "ZenoPlay Addon",
     description: "Stremio addon for zenoplay.to with built-in HLS proxy",
     types: ["movie", "series"],
-    catalogs: [],
-    resources: ["stream"]
+    catalogs: [
+        {
+            type: "movie",
+            id: "zenoplay_movies",
+            name: "ZenoPlay Филми"
+        }
+    ],
+    resources: ["catalog", "stream"]
 });
 
-// 2. Обработчик на стриймовете
+// 2. Обработчик на каталога (връща списък с филми/съдържание)
+builder.defineCatalogHandler(async function(args) {
+    try {
+        const { type, id } = args;
+        console.log(`Заявка за каталог - Тип: ${type}, ID: ${id}`);
+        
+        // Тук може да се добави лоциране и парсване на филми от zenoplay.to
+        const metas = [];
+
+        return { metas };
+    } catch (error) {
+        console.error("Грешка при извличане на каталога:", error.message);
+        return { metas: [] };
+    }
+});
+
+// 3. Обработчик на стриймовете
 builder.defineStreamHandler(async function(args) {
     try {
         const { type, id } = args;
         console.log(`Заявка за стрийъм - Тип: ${type}, ID: ${id}`);
         
-        // Тук ще се добавя лоцирането и извличането от zenoplay.to
         const streams = [];
 
         return { streams };
@@ -31,10 +52,10 @@ builder.defineStreamHandler(async function(args) {
     }
 });
 
-// 3. Свързване на Stremio интерфейса към Express приложението
+// 4. Свързване на Stremio интерфейса към Express приложението
 app.use(getRouter(builder.getInterface()));
 
-// 4. Допълнителен прокси маршрут за HLS стриймове
+// 5. Допълнителен прокси маршрут за HLS стриймове
 app.get("/proxy", async (req, res) => {
     try {
         const targetUrl = req.query.url;
@@ -59,7 +80,7 @@ app.get("/proxy", async (req, res) => {
     }
 });
 
-// 5. Стартиране на уеб сървъра на задължителния за Render порт и адрес
+// 6. Стартиране на уеб сървъра на задължителния за Render порт и адрес
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, "0.0.0.0", () => {
     console.log(`====================================================`);
