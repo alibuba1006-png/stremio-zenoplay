@@ -21,14 +21,23 @@ const builder = new addonBuilder({
     resources: ["catalog", "stream"]
 });
 
-// 2. Обработчик на каталога (връща списък с филми/съдържание)
+// 2. Обработчик на каталога (тук ще се връщат реалните филми)
 builder.defineCatalogHandler(async function(args) {
     try {
         const { type, id } = args;
         console.log(`Заявка за каталог - Тип: ${type}, ID: ${id}`);
         
-        // Тук може да се добави лоциране и парсване на филми от zenoplay.to
-        const metas = [];
+        // ПРИМЕР за структура на филм, която Stremio изисква:
+        // Когато свържем парсването на zenoplay.to, тук ще се пълнят данните.
+        const metas = [
+            // {
+            //     id: 'zenoplay:123',
+            //     type: 'movie',
+            //     name: 'Примерен филм',
+            //     poster: 'https://via.placeholder.com/300x450',
+            //     description: 'Това е примерен описателен текст за филма.'
+            // }
+        ];
 
         return { metas };
     } catch (error) {
@@ -37,7 +46,7 @@ builder.defineCatalogHandler(async function(args) {
     }
 });
 
-// 3. Обработчик на стриймовете
+// 3. Обработчик на стриймовете (когато се кликне на филм)
 builder.defineStreamHandler(async function(args) {
     try {
         const { type, id } = args;
