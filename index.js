@@ -8,7 +8,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.7',
+    version: '1.3.8',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
@@ -215,7 +215,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
-        // Динамично определяне на базовия URL за проксито спрямо заявката към Vercel
         const protocol = req.headers['x-forwarded-proto'] || 'https';
         const host = req.headers['host'];
         const baseProxyUrl = `${protocol}://${host}`;
@@ -293,7 +292,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// Stremio роутинг през SDK интерфейса
 const addonInterface = builder.getInterface();
 
 app.get('/manifest.json', (req, res) => {
@@ -301,7 +299,8 @@ app.get('/manifest.json', (req, res) => {
     res.send(addonInterface.manifest);
 });
 
-app.get('/:resource/:type/:id/:extra?.json', async (req, res) => {
+// Обща функция за обработка на заявките към аддона
+async function handleAddonReq(req, res) {
     const { resource, type, id, extra } = req.params;
     let extraParsed = {};
     if (extra) {
@@ -329,6 +328,13 @@ app.get('/:resource/:type/:id/:extra?.json', async (req, res) => {
         console.error(e);
         res.status(500).send('Internal Server Error');
     }
+}
+
+// Разделени рутове за съвместимост с новия path-to-regexp в Express
+app.get('/:resource/:type/:id/:extra.json', handleAddonReq);
+app.get('/:resource/:type/:id.json', (req, res) => {
+    req.params.extra = null;
+    return handleAddonReq(req, res);
 });
 
 // Прокси рутер за HLS сегменти
@@ -404,7 +410,6 @@ app.get('/', (req, res) => {
     </html>`);
 });
 
-// За локално тестване извън Vercel
 if (process.env.NODE_ENV !== 'production') {
     const PORT = process.env.PORT || 7000;
     app.listen(PORT, () => {
@@ -412,5 +417,4 @@ if (process.env.NODE_ENV !== 'production') {
     });
 }
 
-// Изключително важно за Vercel безсерверната среда:
 module.exports = app;
