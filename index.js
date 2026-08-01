@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.8',
+    version: '1.3.9',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with detailed debug logs',
+    description: 'Stremio addon with fixed proxy headers',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -156,8 +156,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
         }
 
         const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
-        console.log(`[DEBUG STREAM] Fetching movie page: ${url}`);
-
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
         const html = response.data;
         const $ = cheerio.load(html);
@@ -188,7 +186,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         });
 
-        console.log(`[DEBUG STREAM] Found players count: ${foundPlayers.length}`);
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
         
@@ -197,7 +194,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
         for (const player of singlePlayer) {
             const playerTitle = player.title;
             const playerUrl = player.url;
-            console.log(`[DEBUG STREAM] Processing player: ${playerTitle} -> ${playerUrl}`);
 
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
@@ -213,8 +209,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                 if (hash) {
                     try {
                         const postUrl = `https://${domain}/player/index.php?data=${hash}&do=getVideo`;
-                        console.log(`[DEBUG STREAM] Requesting securedLink from: ${postUrl}`);
-
                         const postRes = await axios.post(postUrl, `hash=${hash}&r=${encodeURIComponent(BASE_URL + '/')}`, {
                             headers: {
                                 'User-Agent': UA,
@@ -226,10 +220,9 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                             timeout: 4000
                         });
 
-                        console.log(`[DEBUG STREAM] getVideo response data:`, JSON.stringify(postRes.data));
-
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
+                            // Подаваме правилния домейн и реферер към проксито
                             const proxyUrl = `${baseProxyUrl}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
                             streams.push({
@@ -243,7 +236,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
                             });
                         }
                     } catch (err) {
-                        console.error(`[DEBUG STREAM] getVideo error: ${err.message}`);
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
                             url: playerUrl
@@ -258,7 +250,6 @@ builder.defineStreamHandler(async ({ type, id, extra }) => {
             }
         }
 
-        console.log(`[DEBUG STREAM] Returning streams:`, JSON.stringify(streams));
         return { streams };
     } catch (e) {
         console.error(`[STREAM HANDLER ERROR]:`, e.message);
@@ -321,6 +312,7 @@ app.get('/:resource/:type/:id.json', (req, res) => {
     return handleAddonReq(req, res);
 });
 
+// Подобрен прокси рутер с правилни хедъри за стрийминг
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -330,17 +322,16 @@ app.get('/proxy', async (req, res) => {
         return res.status(400).send('Missing url parameter');
     }
 
-    console.log(`[PROXY REQUEST] Target: ${targetUrl}`);
-
     try {
         const response = await axios.get(targetUrl, {
             headers: {
                 'User-Agent': UA,
                 'Referer': referer,
-                'Origin': `https://${domain}`
+                'Origin': `https://${domain}`,
+                'Accept': '*/*'
             },
             responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream',
-            timeout: 10000
+            timeout: 15000
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
