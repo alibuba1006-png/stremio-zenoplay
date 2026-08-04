@@ -8,7 +8,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.0',
+    version: '1.4.1',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and subtitles support',
     types: ['movie', 'series'],
