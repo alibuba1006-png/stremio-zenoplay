@@ -8,7 +8,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.8', // Обновена версия
+    version: '1.4.0',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and subtitles support',
     types: ['movie', 'series'],
@@ -26,7 +26,6 @@ const manifest = {
             extra: [{ name: 'search', isRequired: false }, { name: 'skip', isRequired: false }]
         }
     ],
-    // Добавен ресурс 'subtitles'
     resources: ['catalog', 'meta', 'stream', 'subtitles'],
     idPrefixes: ['zeno_']
 };
@@ -48,7 +47,7 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL UNHANDLED REJECTION]:', reason);
 });
 
-// 1. Каталог (БЕЗ ПРОМЕНИ)
+// 1. Каталог
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
         let url = `${BASE_URL}/movies/`;
@@ -97,7 +96,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     }
 });
 
-// 2. Мета данни (БЕЗ ПРОМЕНИ)
+// 2. Мета данни
 builder.defineMetaHandler(async ({ type, id }) => {
     try {
         const encodedPath = id.replace('zeno_', '');
@@ -182,7 +181,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийминг хендлър (ДОВЪРШЕН)
+// 3. Стрийминг хендлър
 builder.defineStreamHandler(async ({ type, id }) => {
     try {
         let pageLink = '';
@@ -209,7 +208,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
             
             if (dataUrl) {
                 const normalizedUrl = dataUrl.startsWith('//') ? 'https:' + dataUrl : dataUrl;
-                
                 if (!normalizedUrl.includes('morencius.com') && normalizedUrl.startsWith('http')) {
                     streams.push({
                         title: `ZenoPlay - ${btnText}`,
@@ -219,7 +217,6 @@ builder.defineStreamHandler(async ({ type, id }) => {
             }
         });
 
-        // Ако не намери нищо по горните селектори, опитваме директно от iframe
         if (streams.length === 0) {
             $('iframe').each((i, el) => {
                 const src = $(el).attr('src');
@@ -239,12 +236,13 @@ builder.defineStreamHandler(async ({ type, id }) => {
     }
 });
 
-// 4. НОВ ХЕНДЛЪР ЗА СУБТИТРИ (Взаимстван от логиката за Movian)
+// 4. Субтитри
 builder.defineSubtitlesHandler(async ({ type, id }) => {
     try {
         let pageLink = '';
         if (id.includes(':')) {
-            pageLink = Buffer.from(id.split(':')[1], 'base64').toString('utf8');
+            const parts = id.split(':');
+            pageLink = Buffer.from(parts[1], 'base64').toString('utf8');
         } else {
             pageLink = Buffer.from(id.replace('zeno_', ''), 'base64').toString('utf8');
         }
@@ -256,7 +254,13 @@ builder.defineSubtitlesHandler(async ({ type, id }) => {
         
         const subtitles = [];
 
-        // Метод 1: Търсене на track тагове или субтитри в плеъра на страницата
         $('track[kind="subtitles"], track[kind="captions"]').each((_, el) => {
             let src = $(el).attr('src');
             let lang = $(el).attr('srclang') || 'bg';
+            let label = $(el).attr('label') || 'Български';
+            
+            if (src) {
+                if (src.startsWith('//')) src = 'https:' + src;
+                else if (src.startsWith('/')) src = BASE_URL + src;
+
+                subtitles.push({
