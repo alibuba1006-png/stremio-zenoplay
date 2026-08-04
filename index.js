@@ -8,7 +8,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.7',
+    version: '1.3.8',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
@@ -26,7 +26,7 @@ const manifest = {
             extra: [{ name: 'search', isRequired: false }, { name: 'skip', isRequired: false }]
         }
     ],
-    resources: ['catalog', 'meta', 'stream'],
+    resources: ['catalog', 'meta', 'stream', 'subtitles'],
     idPrefixes: ['zeno_']
 };
 
@@ -181,7 +181,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийминг хендлър
+// 3. Стрийминг хендлър с поддръжка на субтитри
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
         let pageLink = '';
@@ -263,19 +263,72 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
                             timeout: 3000
                         });
 
+                        const extractedSubtitles = [];
+
+                        // Парсиране на субтитрите, ако са върнати от API-то на плеъра
+                        if (postRes.data) {
+                            const rawSubtitles = postRes.data.subtitles || postRes.data.subtitle || postRes.data.tracks;
+                            if (Array.isArray(rawSubtitles)) {
+                                rawSubtitles.forEach(sub => {
+                                    if (sub.file || sub.url || sub.src) {
+                                        let subUrl = sub.file || sub.url || sub.src;
+                                        if (subUrl.startsWith('//')) subUrl = 'https:' + subUrl;
+                                        extractedSubtitles.push({
+                                            id: sub.language || sub.lang || sub.label || 'bg',
+                                            url: subUrl,
+                                            lang: sub.label || sub.language || 'Bulgarian'
+                                        });
+                                    }
+                                });
+                            } else if (typeof rawSubtitles === 'string' && rawSubtitles.trim() !== '') {
+                                // Понякога идват като масив под формата на стринг "[Български]https://..."
+                                const subMatches = rawSubtitles.split(',');
+                                subMatches.forEach((subStr, idx) => {
+                                    const match = subStr.match(/\[(.*?)\](.*)/);
+                                    if (match) {
+                                        let subUrl = match[2].trim();
+                                        if (subUrl.startsWith('//')) subUrl = 'https:' + subUrl;
+                                        extractedSubtitles.push({
+                                            id: `sub_${idx}`,
+                                            url: subUrl,
+                                            lang: match[1].trim() || 'Bulgarian'
+                                        });
+                                    } else if (subStr.trim().startsWith('http')) {
+                                        extractedSubtitles.push({
+                                            id: `sub_${idx}`,
+                                            url: subStr.trim(),
+                                            lang: 'Bulgarian'
+                                        });
+                                    }
+                                });
+                            }
+                        }
+
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
                             const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
-                            streams.push({
+                            const streamObj = {
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
                                 url: proxyUrl
-                            });
+                            };
+
+                            if (extractedSubtitles.length > 0) {
+                                streamObj.subtitles = extractedSubtitles;
+                            }
+
+                            streams.push(streamObj);
                         } else {
-                            streams.push({
+                            const streamObj = {
                                 title: `ZenoPlay - ${playerTitle} (Web)`,
                                 url: playerUrl
-                            });
+                            };
+
+                            if (extractedSubtitles.length > 0) {
+                                streamObj.subtitles = extractedSubtitles;
+                            }
+
+                            streams.push(streamObj);
                         }
                     } catch (err) {
                         streams.push({
@@ -297,6 +350,11 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         console.error(`[STREAM HANDLER ERROR]:`, e);
         return { streams: [] };
     }
+});
+
+// 4. Субтитри хендлър (за съвместимост със Stremio API)
+builder.defineSubtitlesHandler(async ({ type, id }) => {
+    return { subtitles: [] };
 });
 
 // Интегриране на Stremio рутера в Express
