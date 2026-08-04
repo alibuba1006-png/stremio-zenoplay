@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.7',
+    version: '1.4.0',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with strictly single source',
+    description: 'Stremio addon with strictly single source and subtitles support',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -26,7 +26,8 @@ const manifest = {
             extra: [{ name: 'search', isRequired: false }, { name: 'skip', isRequired: false }]
         }
     ],
-    resources: ['catalog', 'meta', 'stream'],
+    // 1. ДОБАВЕНО: 'subtitles' ресурс в манифеста
+    resources: ['catalog', 'meta', 'stream', 'subtitles'],
     idPrefixes: ['zeno_']
 };
 
@@ -46,6 +47,53 @@ process.on('uncaughtException', (err) => {
 process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL UNHANDLED REJECTION]:', reason);
 });
+
+// Помощна функция за намиране на субтитри в HTML/JS
+function extractSubtitles($) {
+    const subtitles = [];
+
+    // Вариант 1: Търсене в HTML5 <track> тагове
+    $('track').each((i, el) => {
+        let src = $(el).attr('src') || $(el).attr('data-src');
+        const srclang = $(el).attr('srclang') || 'bul';
+        const label = $(el).attr('label') || 'Български';
+
+        if (src) {
+            if (src.startsWith('//')) src = 'https:' + src;
+            else if (src.startsWith('/')) src = BASE_URL + src;
+
+            subtitles.push({
+                id: `sub_${i}`,
+                url: src,
+                lang: srclang === 'bg' ? 'bul' : srclang
+            });
+        }
+    });
+
+    // Вариант 2: Търсене в JS обекти или скриптове на страницата (.vtt / .srt)
+    if (subtitles.length === 0) {
+        $('script').each((i, el) => {
+            const scriptContent = $(el).html();
+            if (scriptContent) {
+                // Мачване на URL адрес, завършващ на .vtt или .srt
+                const subMatches = scriptContent.match(/https?:\/\/[^"'\s]+\.(?:vtt|srt)/gi);
+                if (subMatches) {
+                    subMatches.forEach((subUrl, idx) => {
+                        if (!subtitles.some(s => s.url === subUrl)) {
+                            subtitles.push({
+                                id: `js_sub_${idx}`,
+                                url: subUrl,
+                                lang: 'bul'
+                            });
+                        }
+                    });
+                }
+            }
+        });
+    }
+
+    return subtitles;
+}
 
 // 1. Каталог с филтриране по тип
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
@@ -96,7 +144,7 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
     }
 });
 
-// 2. Мета данни с миниатюри (thumbnails) за епизодите
+// 2. Мета данни
 builder.defineMetaHandler(async ({ type, id }) => {
     try {
         const encodedPath = id.replace('zeno_', '');
@@ -181,7 +229,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийминг хендлър
+// 3. Стрийминг хендлър (с добавени субтитри)
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
         let pageLink = '';
@@ -199,6 +247,9 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
         const html = response.data;
         const $ = cheerio.load(html);
+
+        // 2. ДОБАВЕНО: Извличане на субтитрите от HTML на страницата
+        const detectedSubtitles = extractSubtitles($);
 
         const foundPlayers = [];
 
@@ -230,7 +281,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
-        // Определяне на правилния хост за проксито в Render
         const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
         const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
 
@@ -267,27 +317,32 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
                             const targetMasterUrl = postRes.data.securedLink;
                             const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
+                            // 3. ДОБАВЕНО: Закачане на субтитрите към стрийма
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
-                                url: proxyUrl
+                                url: proxyUrl,
+                                subtitles: detectedSubtitles
                             });
                         } else {
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Web)`,
-                                url: playerUrl
+                                url: playerUrl,
+                                subtitles: detectedSubtitles
                             });
                         }
                     } catch (err) {
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
-                            url: playerUrl
+                            url: playerUrl,
+                            subtitles: detectedSubtitles
                         });
                     }
                 }
             } else {
                 streams.push({
                     title: `ZenoPlay - ${playerTitle} (Web)`,
-                    url: playerUrl
+                    url: playerUrl,
+                    subtitles: detectedSubtitles
                 });
             }
         }
@@ -296,6 +351,28 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
     } catch (e) {
         console.error(`[STREAM HANDLER ERROR]:`, e);
         return { streams: [] };
+    }
+});
+
+// 4. ДОБАВЕНО: Отделен Subtitles Handler за Stremio
+builder.defineSubtitlesHandler(async ({ type, id }) => {
+    try {
+        let pageLink = '';
+        if (id.includes(':')) {
+            pageLink = Buffer.from(id.split(':')[1], 'base64').toString('utf8');
+        } else {
+            pageLink = Buffer.from(id.replace('zeno_', ''), 'base64').toString('utf8');
+        }
+
+        const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
+        const response = await axios.get(url, { headers: { 'User-Agent': UA } });
+        const $ = cheerio.load(response.data);
+
+        const subtitles = extractSubtitles($);
+        return { subtitles };
+    } catch (e) {
+        console.error(`[SUBTITLES ERROR]:`, e);
+        return { subtitles: [] };
     }
 });
 
@@ -361,7 +438,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Стартиране на сървъра на единния порт за Render
+// Стартиране на сървъра
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
