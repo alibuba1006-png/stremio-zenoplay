@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.7',
+    version: '1.3.8',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with strictly single source',
+    description: 'Stremio addon with automatic subtitle extraction',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -181,6 +181,45 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
+// Помощна функция за извличане на субтитри от руплейъра
+async function extractSubtitles(playerUrl, domain) {
+    try {
+        const playerRes = await axios.get(playerUrl, {
+            headers: {
+                'User-Agent': UA,
+                'Referer': `${BASE_URL}/`
+            }
+        });
+        const html = playerRes.data;
+
+        // Търсим променливата playerjsSubtitle във вътрешния скрипт на плейъра
+        const regex = /playerjsSubtitle\s*=\s*(['"])([^'"]+)\1/;
+        const match = html.match(regex);
+
+        if (match && match[2]) {
+            let subRaw = match[2]; // Пример: "[Bulgarian]https://theastonishing.cfd/r/..."
+            // Разделяме езика и линка
+            const langMatch = subRaw.match(/\[([^\]]+)\](.*)/);
+            if (langMatch) {
+                return [{
+                    id: 'sub_' + Math.random(),
+                    url: langMatch[2],
+                    lang: langMatch[1] || 'Bulgarian'
+                }];
+            } else {
+                return [{
+                    id: 'sub_' + Math.random(),
+                    url: subRaw,
+                    lang: 'Bulgarian'
+                }];
+            }
+        }
+    } catch (e) {
+        console.error('[SUBTITLE EXTRACTION ERROR]:', e.message);
+    }
+    return [];
+}
+
 // 3. Стрийминг хендлър
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
@@ -230,7 +269,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
-        // Определяне на правилния хост за проксито в Render
         const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
         const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
 
@@ -238,10 +276,16 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
+            // Извличаме субтитрите паралелно
+            let extractedSubs = [];
+
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
                 const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
                 
+                // Извличаме субтитрите за този плейър
+                extractedSubs = await extractSubtitles(playerUrl, domain);
+
                 let hash = '';
                 if (playerUrl.includes('/video/')) {
                     hash = playerUrl.split('/video/')[1];
@@ -269,25 +313,29 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
-                                url: proxyUrl
+                                url: proxyUrl,
+                                subtitles: extractedSubs
                             });
                         } else {
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Web)`,
-                                url: playerUrl
+                                url: playerUrl,
+                                subtitles: extractedSubs
                             });
                         }
                     } catch (err) {
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
-                            url: playerUrl
+                            url: playerUrl,
+                            subtitles: extractedSubs
                         });
                     }
                 }
             } else {
                 streams.push({
                     title: `ZenoPlay - ${playerTitle} (Web)`,
-                    url: playerUrl
+                    url: playerUrl,
+                    subtitles: extractedSubs
                 });
             }
         }
