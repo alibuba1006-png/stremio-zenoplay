@@ -9,7 +9,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.3',
+    version: '1.4.4',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and subtitles support',
     types: ['movie', 'series'],
@@ -186,7 +186,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// Извличане на субтитри от HTML-а на ruplayer/vidplayer
+// Извличане на субтитри от плеъра
 async function extractSubtitles(playerUrl, req) {
     const subs = [];
     console.log(`[SUBTITLES] Извличане на субтитри от player URL: ${playerUrl}`);
@@ -425,7 +425,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - чисто декодиране като UTF-8 и конвертиране към WebVTT
+// Прокси за субтитри - чисто декодиране като UTF-8 и конвертиране към стриктен WebVTT
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
     if (!subUrl) return res.status(400).send('Missing url parameter');
@@ -439,17 +439,26 @@ app.get('/subtitles', async (req, res) => {
         });
 
         let text = iconv.decode(Buffer.from(response.data), 'utf-8');
-        let vttContent = text.replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2').trim();
 
-        if (!vttContent.startsWith('WEBVTT')) {
-            vttContent = `WEBVTT\n\n${vttContent}`;
-        }
+        // Премахваме излишни заглавия като VTT / WEBVTT, за да изградим чист формат
+        text = text.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
+
+        // Замяна на запетаите в таймкодовете с точки (00:00:18,801 -> 00:00:18.801)
+        let vttLines = text
+            .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2')
+            .split('\n');
+
+        // Премахваме самотните номерации (1, 2, 3...), които пречат на Stremio
+        let cleanLines = vttLines.filter(line => !/^\d+$/.test(line.trim()));
+
+        // Валиден VTT формат с празен ред след хедъра
+        const finalVtt = `WEBVTT\n\n` + cleanLines.join('\n');
 
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-        res.send(vttContent);
+        res.send(finalVtt);
 
-        console.log(`[SUBTITLES PROXY] Успешно изпратени субтитри в VTT / UTF-8 формат.`);
+        console.log(`[SUBTITLES PROXY] Успешно изпратени субтитри във валиден WEBVTT формат.`);
 
     } catch (error) {
         console.error(`[SUBTITLES PROXY ERROR]:`, error.message);
