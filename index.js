@@ -31,7 +31,7 @@ function decryptPlayerJS(trashString) {
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.5.2',
+    version: '1.5.3',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
@@ -448,7 +448,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри
+// Прокси за субтитри - Стабилно конвертиране от SRT към WEBVTT
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
     const referer = req.query.referer || 'https://ruplayer.org/';
@@ -476,15 +476,39 @@ app.get('/subtitles', async (req, res) => {
             rawContent = decryptPlayerJS(rawData);
         }
 
-        rawContent = rawContent.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
+        // Почистване на SRT съдържанието
+        let srtContent = rawContent
+            .replace(/^(WEBVTT|VTT)\r?\n?/i, '')
+            .trim();
 
-        let vttLines = rawContent
-            .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2')
-            .split('\n');
+        // Преобразуване на таймкодовете (запетаи -> точки)
+        let vttContent = srtContent.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
 
-        let cleanLines = vttLines.filter(line => !/^\d+$/.test(line.trim()));
+        // Стабилен парсинг и премахване на излишни празни редове
+        let lines = vttContent.split(/\r?\n/);
+        let cleanedLines = [];
+        let isPreviousLineEmpty = true;
 
-        const finalVtt = `WEBVTT\n\n` + cleanLines.join('\n');
+        for (let line of lines) {
+            let trimmedLine = line.trim();
+            
+            // Премахване на самотни номерации на редове (1, 2, 3...)
+            if (/^\d+$/.test(trimmedLine)) {
+                continue;
+            }
+
+            if (trimmedLine === "") {
+                if (!isPreviousLineEmpty) {
+                    cleanedLines.push("");
+                    isPreviousLineEmpty = true;
+                }
+            } else {
+                cleanedLines.push(trimmedLine);
+                isPreviousLineEmpty = false;
+            }
+        }
+
+        const finalVtt = `WEBVTT\n\n${cleanedLines.join('\n').trim()}`;
 
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
