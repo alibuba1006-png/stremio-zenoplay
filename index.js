@@ -3,32 +3,27 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
 const iconv = require('iconv-lite');
-const CryptoJS = require('crypto-js');
+const crypto = require('crypto'); // Вграден модул в Node.js - няма нужда от npm install!
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
 
-// Функция за декриптиране на PlayerJS съдържание (субтитри)
+// Декриптиране с вградения crypto модул
 function decryptPlayerJS(trashString) {
     try {
         if (!trashString || typeof trashString !== 'string') return '';
         if (trashString.startsWith('WEBVTT') || trashString.includes('-->')) return trashString;
 
-        // Премахване на PlayerJS префикси за криптиране
         let clean = trashString.replace(/^#2/g, '').replace(/^#1/g, '');
 
-        // Извличане на Salt / IV / Data при AES декриптиране
-        const key = CryptoJS.enc.Utf8.parse("bk488x9919k120ks"); // Стандартен PlayerJS ключ
-        const iv = CryptoJS.enc.Utf8.parse("1234567890123456");
+        const key = Buffer.from("bk488x9919k120ks", "utf-8");
+        const iv = Buffer.from("1234567890123456", "utf-8");
 
-        const decrypted = CryptoJS.AES.decrypt(clean, key, {
-            iv: iv,
-            mode: CryptoJS.mode.CBC,
-            padding: CryptoJS.pad.Pkcs7
-        });
+        const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
+        let decrypted = decipher.update(clean, 'base64', 'utf-8');
+        decrypted += decipher.final('utf-8');
 
-        const result = decrypted.toString(CryptoJS.enc.Utf8);
-        return result || trashString;
+        return decrypted || trashString;
     } catch (e) {
         return trashString;
     }
@@ -36,7 +31,7 @@ function decryptPlayerJS(trashString) {
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.5.0',
+    version: '1.5.1',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
@@ -452,7 +447,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - Парсване на криптираната HTML/JS страница и парсване до VTT
+// Прокси за субтитри
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
     const referer = req.query.referer || 'https://ruplayer.org/';
@@ -469,7 +464,6 @@ app.get('/subtitles', async (req, res) => {
         let rawData = iconv.decode(Buffer.from(response.data), 'utf-8');
         let rawContent = rawData;
 
-        // Ако отговорът е HTML страница, извличаме криптирания низ от скрипта
         if (rawData.includes('<html') || rawData.includes('<script')) {
             const scriptMatch = rawData.match(/var\s+trash\s*=\s*['"]([^'"]+)['"]/i) || 
                                 rawData.match(/['"](#2[^'"]+)['"]/i) ||
@@ -481,18 +475,14 @@ app.get('/subtitles', async (req, res) => {
             rawContent = decryptPlayerJS(rawData);
         }
 
-        // Премахваме излишните заглавия
         rawContent = rawContent.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
 
-        // Форматиране на таймкодовете (замяна на запетаи с точки за WEBVTT)
         let vttLines = rawContent
             .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2')
             .split('\n');
 
-        // Премахваме самотните номерации (1, 2, 3...), за да не се чупи парсърът
         let cleanLines = vttLines.filter(line => !/^\d+$/.test(line.trim()));
 
-        // Изграждане на валидна WEBVTT структура
         const finalVtt = `WEBVTT\n\n` + cleanLines.join('\n');
 
         res.setHeader('Access-Control-Allow-Origin', '*');
