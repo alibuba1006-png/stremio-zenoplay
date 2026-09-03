@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.3.9',
+    version: '1.3.7',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with automatic subtitle extraction',
+    description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -47,7 +47,7 @@ process.on('unhandledRejection', (reason, promise) => {
     console.error('[CRITICAL UNHANDLED REJECTION]:', reason);
 });
 
-// 1. Каталог с филтриране по тип (подобрен селектор срещу EmptyContent)
+// 1. Каталог с филтриране по тип
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
         let url = `${BASE_URL}/movies/`;
@@ -68,25 +68,23 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const $ = cheerio.load(response.data);
         const metas = [];
 
-        $('.movie-item, .item, .ml-item, article').each((_, element) => {
+        $('.movie-item').each((_, element) => {
             const link = $(element).find('a').attr('href');
-            const cover = $(element).find('img').attr('src') || $(element).find('img').attr('data-src');
-            const title = $(element).find('.title, .title_c, h2, h3').text().trim();
+            const cover = $(element).find('img').attr('src');
+            const title = $(element).find('.title, .title_c').text().trim();
 
             if (link) {
-                const isSeriesItem = link.includes('/tv-show/') || link.includes('/tv-episode/') || link.includes('/series/');
+                const isSeriesItem = link.includes('/tv-show/') || link.includes('/tv-episode/');
                 const itemType = isSeriesItem ? 'series' : 'movie';
 
                 if (itemType === type) {
                     const zenoId = 'zeno_' + Buffer.from(link).toString('base64').replace(/=/g, '');
-                    if (!metas.some(m => m.id === zenoId)) {
-                        metas.push({
-                            id: zenoId,
-                            type: type,
-                            name: title || 'Без заглавие',
-                            poster: cover && cover.startsWith('//') ? 'https:' + cover : cover
-                        });
-                    }
+                    metas.push({
+                        id: zenoId,
+                        type: type,
+                        name: title || 'Без заглавие',
+                        poster: cover && cover.startsWith('//') ? 'https:' + cover : cover
+                    });
                 }
             }
         });
@@ -183,43 +181,6 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// Помощна функция за автоматично извличане на субтитри от плейъра
-async function extractSubtitles(playerUrl) {
-    try {
-        const playerRes = await axios.get(playerUrl, {
-            headers: {
-                'User-Agent': UA,
-                'Referer': `${BASE_URL}/`
-            }
-        });
-        const html = playerRes.data;
-
-        const regex = /playerjsSubtitle\s*=\s*(['"])([^'"]+)\1/;
-        const match = html.match(regex);
-
-        if (match && match[2]) {
-            let subRaw = match[2];
-            const langMatch = subRaw.match(/\[([^\]]+)\](.*)/);
-            if (langMatch) {
-                return [{
-                    id: 'sub_' + Math.random(),
-                    url: langMatch[2],
-                    lang: langMatch[1] || 'Bulgarian'
-                }];
-            } else {
-                return [{
-                    id: 'sub_' + Math.random(),
-                    url: subRaw,
-                    lang: 'Bulgarian'
-                }];
-            }
-        }
-    } catch (e) {
-        console.error('[SUBTITLE EXTRACTION ERROR]:', e.message);
-    }
-    return [];
-}
-
 // 3. Стрийминг хендлър
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
@@ -269,6 +230,7 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
+        // Определяне на правилния хост за проксито в Render
         const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
         const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
 
@@ -276,14 +238,10 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
             const playerTitle = player.title;
             const playerUrl = player.url;
 
-            let extractedSubs = [];
-
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
                 const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
                 
-                extractedSubs = await extractSubtitles(playerUrl);
-
                 let hash = '';
                 if (playerUrl.includes('/video/')) {
                     hash = playerUrl.split('/video/')[1];
@@ -311,29 +269,25 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Proxy)`,
-                                url: proxyUrl,
-                                subtitles: extractedSubs
+                                url: proxyUrl
                             });
                         } else {
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Web)`,
-                                url: playerUrl,
-                                subtitles: extractedSubs
+                                url: playerUrl
                             });
                         }
                     } catch (err) {
                         streams.push({
                             title: `ZenoPlay - ${playerTitle} (Web)`,
-                            url: playerUrl,
-                            subtitles: extractedSubs
+                            url: playerUrl
                         });
                     }
                 }
             } else {
                 streams.push({
                     title: `ZenoPlay - ${playerTitle} (Web)`,
-                    url: playerUrl,
-                    subtitles: extractedSubs
+                    url: playerUrl
                 });
             }
         }
@@ -348,7 +302,7 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 // Интегриране на Stremio рутера в Express
 app.use(getRouter(builder.getInterface()));
 
-// Прокси рутер за HLS сегменти
+// Прокси рутер за HLS сегменти на същия порт
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
@@ -407,7 +361,7 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Стартиране на сървъра
+// Стартиране на сървъра на единния порт за Render
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`====================================================`);
