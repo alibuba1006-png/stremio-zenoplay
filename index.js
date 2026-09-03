@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.3',
+    version: '1.4.4',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with subtitle debugging',
+    description: 'Stremio addon with direct VTT subtitle route',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -153,7 +153,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийминг хендлър с дебъг логове за субтитрите
+// 3. Стрийминг хендлър
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
         let pageLink = '';
@@ -165,8 +165,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         }
 
         const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
-        console.log(`[STREAM] Зареждам страница на филм/епизод: ${url}`);
-
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
         const $ = cheerio.load(response.data);
 
@@ -185,7 +183,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
             }
         });
 
-        console.log(`[STREAM] Намерени плейъри: ${foundPlayers.length}`);
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
@@ -194,7 +191,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
         for (const player of singlePlayer) {
             const playerUrl = player.url;
-            console.log(`[STREAM] Използвам плейър URL: ${playerUrl}`);
             let extractedSubs = [];
 
             try {
@@ -203,22 +199,18 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
                 if (match && match[2]) {
                     let subRaw = match[2];
-                    console.log(`[SUBS] Успешно намерен playerjsSubtitle: ${subRaw}`);
-
                     const langMatch = subRaw.match(/\[([^\]]+)\](.*)/);
                     let subUrl = langMatch ? langMatch[2] : subRaw;
                     let lang = langMatch ? langMatch[1] : 'Bulgarian';
 
-                    const proxySubUrl = `${protocol}://${host}/proxy-sub?url=${encodeURIComponent(subUrl)}&file=sub.srt`;
+                    // Направляваме го към линк, който завършва буквално на .srt, за да го разпознае Stremio на 100%
+                    const proxySubUrl = `${protocol}://${host}/subtitles.srt?url=${encodeURIComponent(subUrl)}`;
 
                     extractedSubs.push({
                         id: 'sub_bg',
                         url: proxySubUrl,
                         lang: lang
                     });
-                    console.log(`[SUBS] Добавени субтитри към потока с език: ${lang}`);
-                } else {
-                    console.log(`[SUBS] Внимание: playerjsSubtitle НЕ е намерен в HTML кода на плейъра.`);
                 }
             } catch (err) {
                 console.error('[SUBTITLE ERROR]:', err.message);
@@ -262,7 +254,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
         return { streams };
     } catch (e) {
-        console.error(`[STREAM HANDLER ERROR]:`, e);
         return { streams: [] };
     }
 });
@@ -304,13 +295,13 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри с логове
-app.get('/proxy-sub', async (req, res) => {
+// Прокси рутер с истинско разширение .srt в пътя
+app.get('/subtitles.srt', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('Missing url');
 
     try {
-        console.log(`[PROXY-SUB] Заявка за сваляне на субтитри от: ${targetUrl}`);
+        console.log(`[SUB-PROXY] Изтегляне на субтитри от: ${targetUrl}`);
         const response = await axios.get(targetUrl, {
             headers: { 
                 'User-Agent': UA, 
@@ -318,7 +309,7 @@ app.get('/proxy-sub', async (req, res) => {
             }
         });
 
-        console.log(`[PROXY-SUB] Успешно свалени субтитри, байтове: ${response.data.length}`);
+        console.log(`[SUB-PROXY] Успешно изтеглени, размер: ${response.data.length} байта`);
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.send(response.data);
