@@ -425,31 +425,21 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за конвертиране и оправия на енкодинга на субтитрите
+// Прокси за субтитри - чисто декодиране като UTF-8 и конвертиране към WebVTT
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
     if (!subUrl) return res.status(400).send('Missing url parameter');
 
     try {
-        console.log(`[SUBTITLES PROXY] Конвертиране на субтитри от: ${subUrl}`);
+        console.log(`[SUBTITLES PROXY] Извличане на субтитри: ${subUrl}`);
         const response = await axios.get(subUrl, {
             headers: { 'User-Agent': UA },
             responseType: 'arraybuffer',
-            timeout: 5000
+            timeout: 7000
         });
 
-        // Декодиране от Windows-1251 (ако съдържа кирилица) или UTF-8
-        let decodedText = iconv.decode(Buffer.from(response.data), 'win1251');
-        
-        // Ако вече е UTF-8, заменяме запетаите в таймкодовете със точки за WEBVTT
-        if (!decodedText.includes('-->')) {
-            decodedText = iconv.decode(Buffer.from(response.data), 'utf-8');
-        }
-
-        // Конвертиране от SRT/HTML в чист WEBVTT
-        let vttContent = decodedText
-            .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2') // замяна на 00:00:00,000 с 00:00:00.000
-            .trim();
+        let text = iconv.decode(Buffer.from(response.data), 'utf-8');
+        let vttContent = text.replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2').trim();
 
         if (!vttContent.startsWith('WEBVTT')) {
             vttContent = `WEBVTT\n\n${vttContent}`;
@@ -458,6 +448,8 @@ app.get('/subtitles', async (req, res) => {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.send(vttContent);
+
+        console.log(`[SUBTITLES PROXY] Успешно изпратени субтитри в VTT / UTF-8 формат.`);
 
     } catch (error) {
         console.error(`[SUBTITLES PROXY ERROR]:`, error.message);
