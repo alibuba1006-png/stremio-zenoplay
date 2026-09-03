@@ -10,7 +10,7 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.5.5',
+    version: '1.5.6',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
@@ -218,8 +218,11 @@ async function extractSubtitles(playerUrl, req) {
                 if (langLabel.toLowerCase().includes('eng')) langCode = 'en';
 
                 if (subUrl) {
-                    // Фалшиво .vtt разширение в края, за да го приеме Stremio
-                    const proxiedSubUrl = `${protocol}://${host}/subtitles/sub.vtt?url=${encodeURIComponent(subUrl)}&referer=${encodeURIComponent(playerUrl)}`;
+                    // Кодираме адреса в Base64 без '='
+                    const encodedSubUrl = Buffer.from(subUrl).toString('base64').replace(/=/g, '');
+                    // Добавяме го като чист PATH адрес, завършващ на .vtt (без query params)
+                    const proxiedSubUrl = `${protocol}://${host}/subtitles/${encodedSubUrl}/sub.vtt`;
+
                     subs.push({
                         id: `sub_${index}`,
                         url: proxiedSubUrl,
@@ -428,46 +431,43 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - с поддръжка за /subtitles и /subtitles/sub.vtt
-app.get(['/subtitles', '/subtitles/*'], async (req, res) => {
-    const subUrl = req.query.url;
-    const referer = req.query.referer || 'https://ruplayer.org/';
-
-    if (!subUrl) return res.status(400).send('Missing url parameter');
-
+// Прокси за субтитри с Base64 декодиране
+app.get('/subtitles/:encodedUrl/*', async (req, res) => {
     try {
+        const encodedUrl = req.params.encodedUrl;
+        
+        // Връщаме обратно липсата на Base64 пад
+        let base64 = encodedUrl;
+        while (base64.length % 4 !== 0) {
+            base64 += '=';
+        }
+
+        const subUrl = Buffer.from(base64, 'base64').toString('utf8');
         console.log(`[SUBTITLES REQUEST] Заявка за субтитри от Stremio -> ${subUrl}`);
 
         const response = await axios.get(subUrl, {
             headers: { 
                 'User-Agent': UA, 
-                'Referer': referer 
+                'Referer': 'https://ruplayer.org/' 
             },
             responseType: 'arraybuffer',
             timeout: 8000
         });
 
-        // 1. Декодиране на текста
+        // Декодиране на текста
         let rawData = iconv.decode(Buffer.from(response.data), 'utf-8');
-        console.log(`[SUBTITLES RAW SAMPLE]: ${rawData.substring(0, 150).replace(/\r?\n/g, ' ')}`);
 
-        // 2. Премахване на излишни WebVTT/SRT заглавия
+        // Премахване на заглавия и оправяне на запетаи
         let cleanText = rawData.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
-
-        // 3. Замяна на запетаите в таймкодовете с точки (00:01:20,500 -> 00:01:20.500)
         let vttFormat = cleanText.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
 
-        // 4. Почистване на номерацията и празните редове
         let lines = vttFormat.split(/\r?\n/);
         let validLines = [];
         let lastWasEmpty = false;
 
         for (let line of lines) {
             let trimmed = line.trim();
-
-            if (/^\d+$/.test(trimmed)) {
-                continue;
-            }
+            if (/^\d+$/.test(trimmed)) continue;
 
             if (trimmed === '') {
                 if (!lastWasEmpty) {
@@ -480,7 +480,6 @@ app.get(['/subtitles', '/subtitles/*'], async (req, res) => {
             }
         }
 
-        // 5. Финален WebVTT формат
         const finalVtt = `WEBVTT\n\n${validLines.join('\n').trim()}`;
 
         res.setHeader('Access-Control-Allow-Origin', '*');
