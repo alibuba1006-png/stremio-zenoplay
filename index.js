@@ -31,7 +31,7 @@ function decryptPlayerJS(trashString) {
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.5.3',
+    version: '1.5.4',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
@@ -448,77 +448,71 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - Стабилно конвертиране от SRT към WEBVTT
+// Прокси за субтитри - директно извличане и VTT конвертиране
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
     const referer = req.query.referer || 'https://ruplayer.org/';
+
     if (!subUrl) return res.status(400).send('Missing url parameter');
 
     try {
-        console.log(`[SUBTITLES PROXY] Извличане на субтитри: ${subUrl}`);
+        console.log(`[SUBTITLES REQUEST] Заявка за субтитри от Stremio -> ${subUrl}`);
+
         const response = await axios.get(subUrl, {
-            headers: { 'User-Agent': UA, 'Referer': referer },
+            headers: { 
+                'User-Agent': UA, 
+                'Referer': referer 
+            },
             responseType: 'arraybuffer',
-            timeout: 7000
+            timeout: 8000
         });
 
+        // 1. Декодиране на текста
         let rawData = iconv.decode(Buffer.from(response.data), 'utf-8');
-        let rawContent = rawData;
+        console.log(`[SUBTITLES RAW SAMPLE]: ${rawData.substring(0, 150).replace(/\r?\n/g, ' ')}`);
 
-        if (rawData.includes('<html') || rawData.includes('<script')) {
-            const scriptMatch = rawData.match(/var\s+trash\s*=\s*['"]([^'"]+)['"]/i) || 
-                                rawData.match(/['"](#2[^'"]+)['"]/i) ||
-                                rawData.match(/['"](#1[^'"]+)['"]/i);
-            if (scriptMatch && scriptMatch[1]) {
-                rawContent = decryptPlayerJS(scriptMatch[1]);
-            }
-        } else {
-            rawContent = decryptPlayerJS(rawData);
-        }
+        // 2. Премахване на излишни WebVTT/SRT заглавия
+        let cleanText = rawData.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
 
-        // Почистване на SRT съдържанието
-        let srtContent = rawContent
-            .replace(/^(WEBVTT|VTT)\r?\n?/i, '')
-            .trim();
+        // 3. Замяна на запетаите в таймкодовете с точки (00:01:20,500 -> 00:01:20.500)
+        let vttFormat = cleanText.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
 
-        // Преобразуване на таймкодовете (запетаи -> точки)
-        let vttContent = srtContent.replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
-
-        // Стабилен парсинг и премахване на излишни празни редове
-        let lines = vttContent.split(/\r?\n/);
-        let cleanedLines = [];
-        let isPreviousLineEmpty = true;
+        // 4. Почистване на номерацията и празните редове
+        let lines = vttFormat.split(/\r?\n/);
+        let validLines = [];
+        let lastWasEmpty = false;
 
         for (let line of lines) {
-            let trimmedLine = line.trim();
-            
-            // Премахване на самотни номерации на редове (1, 2, 3...)
-            if (/^\d+$/.test(trimmedLine)) {
+            let trimmed = line.trim();
+
+            // Пропускаме самотните номера (1, 2, 3...)
+            if (/^\d+$/.test(trimmed)) {
                 continue;
             }
 
-            if (trimmedLine === "") {
-                if (!isPreviousLineEmpty) {
-                    cleanedLines.push("");
-                    isPreviousLineEmpty = true;
+            if (trimmed === '') {
+                if (!lastWasEmpty) {
+                    validLines.push('');
+                    lastWasEmpty = true;
                 }
             } else {
-                cleanedLines.push(trimmedLine);
-                isPreviousLineEmpty = false;
+                validLines.push(trimmed);
+                lastWasEmpty = false;
             }
         }
 
-        const finalVtt = `WEBVTT\n\n${cleanedLines.join('\n').trim()}`;
+        // 5. Финален WebVTT формат
+        const finalVtt = `WEBVTT\n\n${validLines.join('\n').trim()}`;
 
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.send(finalVtt);
 
-        console.log(`[SUBTITLES PROXY] Успешно декриптирани и изпратени субтитри.`);
+        console.log(`[SUBTITLES SUCCESS] Успешно изпратени субтитри към Stremio.`);
 
     } catch (error) {
-        console.error(`[SUBTITLES PROXY ERROR]:`, error.message);
-        res.status(500).send('Subtitles Proxy Error');
+        console.error(`[SUBTITLES ERROR]:`, error.message);
+        res.status(500).send('Subtitles Error');
     }
 });
 
