@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.1',
+    version: '1.4.2',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with proxied subtitles',
+    description: 'Stremio addon with working proxied subtitles',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -153,7 +153,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
     }
 });
 
-// 3. Стрийминг хендлър с проксирани субтитри
+// 3. Стрийминг хендлър с правилни проксирани субтитри
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
         let pageLink = '';
@@ -203,7 +203,8 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
                     let subUrl = langMatch ? langMatch[2] : subRaw;
                     let lang = langMatch ? langMatch[1] : 'Bulgarian';
 
-                    const proxySubUrl = `${protocol}://${host}/proxy-sub?url=${encodeURIComponent(subUrl)}`;
+                    // Добавяме фиктивно разширение към прокси линка, за да го разпознае Stremio като субтитри
+                    const proxySubUrl = `${protocol}://${host}/proxy-sub?url=${encodeURIComponent(subUrl)}&file=sub.srt`;
 
                     extractedSubs.push({
                         id: 'sub_bg',
@@ -294,20 +295,24 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси рутер за субтитри
+// Поправено прокси за субтитри
 app.get('/proxy-sub', async (req, res) => {
     const targetUrl = req.query.url;
     if (!targetUrl) return res.status(400).send('Missing url');
 
     try {
         const response = await axios.get(targetUrl, {
-            headers: { 'User-Agent': UA, 'Referer': 'https://ruplayer.org/' }
+            headers: { 
+                'User-Agent': UA, 
+                'Referer': 'https://ruplayer.org/' 
+            }
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         res.send(response.data);
     } catch (err) {
+        console.error('[SUB PROXY ERROR]:', err.message);
         res.status(500).send('Sub proxy error');
     }
 });
