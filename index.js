@@ -2,13 +2,14 @@ const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
+const iconv = require('iconv-lite');
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.2',
+    version: '1.4.3',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and subtitles support',
     types: ['movie', 'series'],
@@ -186,15 +187,12 @@ builder.defineMetaHandler(async ({ type, id }) => {
 });
 
 // Извличане на субтитри от HTML-а на ruplayer/vidplayer
-async function extractSubtitles(playerUrl) {
+async function extractSubtitles(playerUrl, req) {
     const subs = [];
     console.log(`[SUBTITLES] Извличане на субтитри от player URL: ${playerUrl}`);
     try {
         const playerRes = await axios.get(playerUrl, {
-            headers: {
-                'User-Agent': UA,
-                'Referer': `${BASE_URL}/`
-            },
+            headers: { 'User-Agent': UA, 'Referer': `${BASE_URL}/` },
             timeout: 4000
         });
 
@@ -206,6 +204,8 @@ async function extractSubtitles(playerUrl) {
             console.log(`[SUBTITLES] Намерена сурова стойност: ${rawSubs}`);
             
             const parts = rawSubs.split(',');
+            const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
+            const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
 
             parts.forEach((subPart, index) => {
                 const langMatch = subPart.match(/\[([^\]]+)\](.*)/);
@@ -216,17 +216,18 @@ async function extractSubtitles(playerUrl) {
                 if (langLabel.toLowerCase().includes('eng')) langCode = 'eng';
 
                 if (subUrl) {
+                    const proxiedSubUrl = `${protocol}://${host}/subtitles?url=${encodeURIComponent(subUrl)}`;
                     subs.push({
                         id: `sub_${index}`,
-                        url: subUrl,
+                        url: proxiedSubUrl,
                         lang: langCode,
                         label: langLabel
                     });
-                    console.log(`[SUBTITLES] Добавени субтитри -> Език: ${langLabel} (${langCode}), Линк: ${subUrl}`);
+                    console.log(`[SUBTITLES] Добавени субтитри -> Език: ${langLabel} (${langCode}), Прокси: ${proxiedSubUrl}`);
                 }
             });
         } else {
-            console.log(`[SUBTITLES] Не бяха открити субтитри (липсва playerjsSubtitle).`);
+            console.log(`[SUBTITLES] Не бяха открити субтитри.`);
         }
     } catch (err) {
         console.error(`[SUBTITLES ERROR]:`, err.message);
@@ -296,8 +297,7 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
             console.log(`[STREAM] Обработка на плейър: ${playerTitle} -> ${playerUrl}`);
 
-            // Извличаме субтитрите за този плейър
-            const subtitles = await extractSubtitles(playerUrl);
+            const subtitles = await extractSubtitles(playerUrl, req);
 
             if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
                 const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
@@ -338,7 +338,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
                                 subtitles: subtitles
                             });
                         } else {
-                            console.log(`[STREAM] Липсва securedLink в отговора, връщане към Web URL.`);
                             streams.push({
                                 title: `ZenoPlay - ${playerTitle} (Web)`,
                                 url: playerUrl,
@@ -371,28 +370,21 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
     }
 });
 
-// Интегриране на Stremio рутера в Express
 app.use(getRouter(builder.getInterface()));
 
-// Прокси рутер за HLS сегменти
+// Прокси за видео сегменти
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
     const referer = req.query.referer || `https://${domain}/`;
 
-    if (!targetUrl) {
-        return res.status(400).send('Missing url parameter');
-    }
+    if (!targetUrl) return res.status(400).send('Missing url parameter');
 
     try {
         console.log(`[PROXY] Проксиране на: ${targetUrl.substring(0, 80)}...`);
 
         const response = await axios.get(targetUrl, {
-            headers: {
-                'User-Agent': UA,
-                'Referer': referer,
-                'Origin': `https://${domain}`
-            },
+            headers: { 'User-Agent': UA, 'Referer': referer, 'Origin': `https://${domain}` },
             responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream'
         });
 
@@ -409,9 +401,7 @@ app.get('/proxy', async (req, res) => {
 
             const modifiedLines = m3u8Content.split('\n').map(line => {
                 const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#')) {
-                    return line;
-                }
+                if (!trimmed || trimmed.startsWith('#')) return line;
 
                 let segmentUrl = trimmed;
                 if (!segmentUrl.startsWith('http')) {
@@ -432,6 +422,46 @@ app.get('/proxy', async (req, res) => {
     } catch (error) {
         console.error(`[PROXY ERROR]:`, error.message);
         res.status(500).send('Proxy error');
+    }
+});
+
+// Прокси за конвертиране и оправия на енкодинга на субтитрите
+app.get('/subtitles', async (req, res) => {
+    const subUrl = req.query.url;
+    if (!subUrl) return res.status(400).send('Missing url parameter');
+
+    try {
+        console.log(`[SUBTITLES PROXY] Конвертиране на субтитри от: ${subUrl}`);
+        const response = await axios.get(subUrl, {
+            headers: { 'User-Agent': UA },
+            responseType: 'arraybuffer',
+            timeout: 5000
+        });
+
+        // Декодиране от Windows-1251 (ако съдържа кирилица) или UTF-8
+        let decodedText = iconv.decode(Buffer.from(response.data), 'win1251');
+        
+        // Ако вече е UTF-8, заменяме запетаите в таймкодовете със точки за WEBVTT
+        if (!decodedText.includes('-->')) {
+            decodedText = iconv.decode(Buffer.from(response.data), 'utf-8');
+        }
+
+        // Конвертиране от SRT/HTML в чист WEBVTT
+        let vttContent = decodedText
+            .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2') // замяна на 00:00:00,000 с 00:00:00.000
+            .trim();
+
+        if (!vttContent.startsWith('WEBVTT')) {
+            vttContent = `WEBVTT\n\n${vttContent}`;
+        }
+
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
+        res.send(vttContent);
+
+    } catch (error) {
+        console.error(`[SUBTITLES PROXY ERROR]:`, error.message);
+        res.status(500).send('Subtitles Proxy Error');
     }
 });
 
