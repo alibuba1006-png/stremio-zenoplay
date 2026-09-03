@@ -8,30 +8,9 @@ const crypto = require('crypto');
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
 
-// Декриптиране с вградения crypto модул
-function decryptPlayerJS(trashString) {
-    try {
-        if (!trashString || typeof trashString !== 'string') return '';
-        if (trashString.startsWith('WEBVTT') || trashString.includes('-->')) return trashString;
-
-        let clean = trashString.replace(/^#2/g, '').replace(/^#1/g, '');
-
-        const key = Buffer.from("bk488x9919k120ks", "utf-8");
-        const iv = Buffer.from("1234567890123456", "utf-8");
-
-        const decipher = crypto.createDecipheriv('aes-128-cbc', key, iv);
-        let decrypted = decipher.update(clean, 'base64', 'utf-8');
-        decrypted += decipher.final('utf-8');
-
-        return decrypted || trashString;
-    } catch (e) {
-        return trashString;
-    }
-}
-
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.5.4',
+    version: '1.5.5',
     name: 'ZenoPlay Direct Proxy',
     description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
@@ -239,7 +218,8 @@ async function extractSubtitles(playerUrl, req) {
                 if (langLabel.toLowerCase().includes('eng')) langCode = 'en';
 
                 if (subUrl) {
-                    const proxiedSubUrl = `${protocol}://${host}/subtitles?url=${encodeURIComponent(subUrl)}&referer=${encodeURIComponent(playerUrl)}`;
+                    // Фалшиво .vtt разширение в края, за да го приеме Stremio
+                    const proxiedSubUrl = `${protocol}://${host}/subtitles/sub.vtt?url=${encodeURIComponent(subUrl)}&referer=${encodeURIComponent(playerUrl)}`;
                     subs.push({
                         id: `sub_${index}`,
                         url: proxiedSubUrl,
@@ -311,9 +291,6 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
-        const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
-        const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
-
         for (const player of singlePlayer) {
             const playerTitle = player.title;
             const playerUrl = player.url;
@@ -351,6 +328,9 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
 
                         if (postRes.data && postRes.data.securedLink) {
                             const targetMasterUrl = postRes.data.securedLink;
+                            const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
+                            const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
+
                             const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
                             console.log(`[STREAM] Успешно генериран Proxy URL: ${proxyUrl}`);
@@ -448,8 +428,8 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - директно извличане и VTT конвертиране
-app.get('/subtitles', async (req, res) => {
+// Прокси за субтитри - с поддръжка за /subtitles и /subtitles/sub.vtt
+app.get(['/subtitles', '/subtitles/*'], async (req, res) => {
     const subUrl = req.query.url;
     const referer = req.query.referer || 'https://ruplayer.org/';
 
@@ -485,7 +465,6 @@ app.get('/subtitles', async (req, res) => {
         for (let line of lines) {
             let trimmed = line.trim();
 
-            // Пропускаме самотните номера (1, 2, 3...)
             if (/^\d+$/.test(trimmed)) {
                 continue;
             }
