@@ -3,15 +3,42 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const express = require('express');
 const iconv = require('iconv-lite');
+const CryptoJS = require('crypto-js');
 
 const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:152.0) Gecko/20100101 Firefox/152.0";
 const BASE_URL = "https://zenoplay.to";
 
+// Функция за декриптиране на PlayerJS съдържание (субтитри)
+function decryptPlayerJS(trashString) {
+    try {
+        if (!trashString || typeof trashString !== 'string') return '';
+        if (trashString.startsWith('WEBVTT') || trashString.includes('-->')) return trashString;
+
+        // Премахване на PlayerJS префикси за криптиране
+        let clean = trashString.replace(/^#2/g, '').replace(/^#1/g, '');
+
+        // Извличане на Salt / IV / Data при AES декриптиране
+        const key = CryptoJS.enc.Utf8.parse("bk488x9919k120ks"); // Стандартен PlayerJS ключ
+        const iv = CryptoJS.enc.Utf8.parse("1234567890123456");
+
+        const decrypted = CryptoJS.AES.decrypt(clean, key, {
+            iv: iv,
+            mode: CryptoJS.mode.CBC,
+            padding: CryptoJS.pad.Pkcs7
+        });
+
+        const result = decrypted.toString(CryptoJS.enc.Utf8);
+        return result || trashString;
+    } catch (e) {
+        return trashString;
+    }
+}
+
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.4',
+    version: '1.5.0',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with strictly single source and subtitles support',
+    description: 'Stremio addon with strictly single source and decrypted subtitles support',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -216,7 +243,7 @@ async function extractSubtitles(playerUrl, req) {
                 if (langLabel.toLowerCase().includes('eng')) langCode = 'eng';
 
                 if (subUrl) {
-                    const proxiedSubUrl = `${protocol}://${host}/subtitles?url=${encodeURIComponent(subUrl)}`;
+                    const proxiedSubUrl = `${protocol}://${host}/subtitles?url=${encodeURIComponent(subUrl)}&referer=${encodeURIComponent(playerUrl)}`;
                     subs.push({
                         id: `sub_${index}`,
                         url: proxiedSubUrl,
@@ -425,40 +452,54 @@ app.get('/proxy', async (req, res) => {
     }
 });
 
-// Прокси за субтитри - чисто декодиране като UTF-8 и конвертиране към стриктен WebVTT
+// Прокси за субтитри - Парсване на криптираната HTML/JS страница и парсване до VTT
 app.get('/subtitles', async (req, res) => {
     const subUrl = req.query.url;
+    const referer = req.query.referer || 'https://ruplayer.org/';
     if (!subUrl) return res.status(400).send('Missing url parameter');
 
     try {
         console.log(`[SUBTITLES PROXY] Извличане на субтитри: ${subUrl}`);
         const response = await axios.get(subUrl, {
-            headers: { 'User-Agent': UA },
+            headers: { 'User-Agent': UA, 'Referer': referer },
             responseType: 'arraybuffer',
             timeout: 7000
         });
 
-        let text = iconv.decode(Buffer.from(response.data), 'utf-8');
+        let rawData = iconv.decode(Buffer.from(response.data), 'utf-8');
+        let rawContent = rawData;
 
-        // Премахваме излишни заглавия като VTT / WEBVTT, за да изградим чист формат
-        text = text.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
+        // Ако отговорът е HTML страница, извличаме криптирания низ от скрипта
+        if (rawData.includes('<html') || rawData.includes('<script')) {
+            const scriptMatch = rawData.match(/var\s+trash\s*=\s*['"]([^'"]+)['"]/i) || 
+                                rawData.match(/['"](#2[^'"]+)['"]/i) ||
+                                rawData.match(/['"](#1[^'"]+)['"]/i);
+            if (scriptMatch && scriptMatch[1]) {
+                rawContent = decryptPlayerJS(scriptMatch[1]);
+            }
+        } else {
+            rawContent = decryptPlayerJS(rawData);
+        }
 
-        // Замяна на запетаите в таймкодовете с точки (00:00:18,801 -> 00:00:18.801)
-        let vttLines = text
+        // Премахваме излишните заглавия
+        rawContent = rawContent.replace(/^(WEBVTT|VTT)\r?\n?/i, '').trim();
+
+        // Форматиране на таймкодовете (замяна на запетаи с точки за WEBVTT)
+        let vttLines = rawContent
             .replace(/(\d\d:\d\d:\d\d),(\d\d\d)/g, '$1.$2')
             .split('\n');
 
-        // Премахваме самотните номерации (1, 2, 3...), които пречат на Stremio
+        // Премахваме самотните номерации (1, 2, 3...), за да не се чупи парсърът
         let cleanLines = vttLines.filter(line => !/^\d+$/.test(line.trim()));
 
-        // Валиден VTT формат с празен ред след хедъра
+        // Изграждане на валидна WEBVTT структура
         const finalVtt = `WEBVTT\n\n` + cleanLines.join('\n');
 
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.send(finalVtt);
 
-        console.log(`[SUBTITLES PROXY] Успешно изпратени субтитри във валиден WEBVTT формат.`);
+        console.log(`[SUBTITLES PROXY] Успешно декриптирани и изпратени субтитри.`);
 
     } catch (error) {
         console.error(`[SUBTITLES PROXY ERROR]:`, error.message);
