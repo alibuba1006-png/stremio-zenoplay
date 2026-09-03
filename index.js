@@ -8,9 +8,9 @@ const BASE_URL = "https://zenoplay.to";
 
 const manifest = {
     id: 'org.zenoplay.proxy',
-    version: '1.4.6',
+    version: '1.3.7',
     name: 'ZenoPlay Direct Proxy',
-    description: 'Stremio addon with fixed subtitle content-type',
+    description: 'Stremio addon with strictly single source',
     types: ['movie', 'series'],
     catalogs: [
         {
@@ -39,7 +39,15 @@ app.use((req, res, next) => {
     next();
 });
 
-// 1. Каталог
+process.on('uncaughtException', (err) => {
+    console.error('[CRITICAL UNCAUGHT EXCEPTION]:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('[CRITICAL UNHANDLED REJECTION]:', reason);
+});
+
+// 1. Каталог с филтриране по тип
 builder.defineCatalogHandler(async ({ type, id, extra }) => {
     try {
         let url = `${BASE_URL}/movies/`;
@@ -60,36 +68,35 @@ builder.defineCatalogHandler(async ({ type, id, extra }) => {
         const $ = cheerio.load(response.data);
         const metas = [];
 
-        $('.movie-item, .item, .ml-item, article').each((_, element) => {
+        $('.movie-item').each((_, element) => {
             const link = $(element).find('a').attr('href');
-            const cover = $(element).find('img').attr('src') || $(element).find('img').attr('data-src');
-            const title = $(element).find('.title, .title_c, h2, h3').text().trim();
+            const cover = $(element).find('img').attr('src');
+            const title = $(element).find('.title, .title_c').text().trim();
 
             if (link) {
-                const isSeriesItem = link.includes('/tv-show/') || link.includes('/tv-episode/') || link.includes('/series/');
+                const isSeriesItem = link.includes('/tv-show/') || link.includes('/tv-episode/');
                 const itemType = isSeriesItem ? 'series' : 'movie';
 
                 if (itemType === type) {
                     const zenoId = 'zeno_' + Buffer.from(link).toString('base64').replace(/=/g, '');
-                    if (!metas.some(m => m.id === zenoId)) {
-                        metas.push({
-                            id: zenoId,
-                            type: type,
-                            name: title || 'Без заглавие',
-                            poster: cover && cover.startsWith('//') ? 'https:' + cover : cover
-                        });
-                    }
+                    metas.push({
+                        id: zenoId,
+                        type: type,
+                        name: title || 'Без заглавие',
+                        poster: cover && cover.startsWith('//') ? 'https:' + cover : cover
+                    });
                 }
             }
         });
 
         return { metas };
     } catch (e) {
+        console.error(`[CATALOG ERROR]:`, e);
         return { metas: [] };
     }
 });
 
-// 2. Мета данни
+// 2. Мета данни с миниатюри (thumbnails) за епизодите
 builder.defineMetaHandler(async ({ type, id }) => {
     try {
         const encodedPath = id.replace('zeno_', '');
@@ -114,6 +121,7 @@ builder.defineMetaHandler(async ({ type, id }) => {
 
         if (type === 'series') {
             const videos = [];
+            
             $('.episodess a, .les-episod a, .seasons-dropdown a, .episode-item a, ul.episodess li a, .e-item a, .les-m a, .numeros a').each((i, el) => {
                 const epLink = $(el).attr('href');
                 let epThumbnail = $(el).find('img').attr('src') || $(el).attr('data-img') || poster;
@@ -142,11 +150,33 @@ builder.defineMetaHandler(async ({ type, id }) => {
                 }
             });
 
-            if (videos.length > 0) meta.videos = videos;
+            if (videos.length === 0) {
+                $('a').each((i, el) => {
+                    const href = $(el).attr('href');
+                    let text = $(el).text().replace(/play_circle/gi, '').trim();
+                    let epThumbnail = $(el).find('img').attr('src') || poster;
+                    if (epThumbnail && epThumbnail.startsWith('//')) epThumbnail = 'https:' + epThumbnail;
+
+                    if (href && (href.includes('/episode/') || href.includes('/tv-episode/') || href.includes('epizod') || text.toLowerCase().includes('епизод'))) {
+                        videos.push({
+                            id: id + ':' + Buffer.from(href).toString('base64').replace(/=/g, ''),
+                            title: text || `Епизод ${videos.length + 1}`,
+                            season: 1,
+                            episode: videos.length + 1,
+                            thumbnail: epThumbnail
+                        });
+                    }
+                });
+            }
+
+            if (videos.length > 0) {
+                meta.videos = videos;
+            }
         }
 
         return { meta };
     } catch (e) {
+        console.error(`[META ERROR]:`, e);
         return { meta: { id, type, name: "Грешка при зареждане" } };
     }
 });
@@ -155,27 +185,43 @@ builder.defineMetaHandler(async ({ type, id }) => {
 builder.defineStreamHandler(async ({ type, id }, req) => {
     try {
         let pageLink = '';
+        
         if (id.includes(':')) {
             const parts = id.split(':');
-            pageLink = Buffer.from(parts[1], 'base64').toString('utf8');
+            const encodedEpPath = parts[1];
+            pageLink = Buffer.from(encodedEpPath, 'base64').toString('utf8');
         } else {
-            pageLink = Buffer.from(id.replace('zeno_', ''), 'base64').toString('utf8');
+            const encodedPath = id.replace('zeno_', '');
+            pageLink = Buffer.from(encodedPath, 'base64').toString('utf8');
         }
 
         const url = pageLink.startsWith('http') ? pageLink : BASE_URL + pageLink;
         const response = await axios.get(url, { headers: { 'User-Agent': UA } });
-        const $ = cheerio.load(response.data);
+        const html = response.data;
+        const $ = cheerio.load(html);
 
         const foundPlayers = [];
+
         $('button[data-url], a[data-url], div[data-url], iframe, .player-item').each((i, el) => {
             const dataUrl = $(el).attr('data-url') || $(el).attr('data-link') || $(el).attr('data-src') || $(el).attr('src') || $(el).attr('href');
             const btnText = $(el).text().trim() || $(el).attr('title') || `Плеър ${i + 1}`;
             
             if (dataUrl) {
                 const normalizedUrl = dataUrl.startsWith('//') ? 'https:' + dataUrl : dataUrl;
-                if (normalizedUrl.includes('ruplayer.org') || normalizedUrl.includes('vidplayer.su')) {
+                
+                if (
+                    !normalizedUrl.includes('morencius.com') &&
+                    (normalizedUrl.includes('ruplayer.org') ||
+                     normalizedUrl.includes('vidplayer.su') ||
+                     normalizedUrl.includes('vidsrc') ||
+                     normalizedUrl.includes('embed') ||
+                     normalizedUrl.includes('.m3u8'))
+                ) {
                     if (!foundPlayers.some(p => p.url === normalizedUrl)) {
-                        foundPlayers.push({ title: btnText.replace(/play_circle/gi, '').trim(), url: normalizedUrl });
+                        foundPlayers.push({
+                            title: btnText.replace(/play_circle/gi, '').trim() || `Плеър ${foundPlayers.length + 1}`,
+                            url: normalizedUrl
+                        });
                     }
                 }
             }
@@ -184,146 +230,141 @@ builder.defineStreamHandler(async ({ type, id }, req) => {
         const singlePlayer = foundPlayers.slice(0, 1);
         const streams = [];
 
-        const host = req ? req.headers['host'] : (process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000');
+        // Определяне на правилния хост за проксито в Render
+        const host = req ? req.headers['host'] : process.env.RENDER_EXTERNAL_URL ? new URL(process.env.RENDER_EXTERNAL_URL).host : 'localhost:10000';
         const protocol = req && req.headers['x-forwarded-proto'] ? req.headers['x-forwarded-proto'] : 'https';
 
         for (const player of singlePlayer) {
+            const playerTitle = player.title;
             const playerUrl = player.url;
-            let extractedSubs = [];
 
-            try {
-                const playerRes = await axios.get(playerUrl, { headers: { 'User-Agent': UA, 'Referer': `${BASE_URL}/` } });
-                const match = playerRes.data.match(/playerjsSubtitle\s*=\s*(['"])([^'"]+)\1/);
-
-                if (match && match[2]) {
-                    let subRaw = match[2];
-                    const langMatch = subRaw.match(/\[([^\]]+)\](.*)/);
-                    let subUrl = langMatch ? langMatch[2] : subRaw;
-                    let lang = langMatch ? langMatch[1] : 'Bulgarian';
-
-                    const proxySubUrl = `${protocol}://${host}/subtitles.vtt?url=${encodeURIComponent(subUrl)}`;
-
-                    extractedSubs.push({
-                        id: 'sub_bg',
-                        url: proxySubUrl,
-                        lang: lang
-                    });
+            if (playerUrl.includes('ruplayer.org') || playerUrl.includes('vidplayer.su')) {
+                const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
+                const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
+                
+                let hash = '';
+                if (playerUrl.includes('/video/')) {
+                    hash = playerUrl.split('/video/')[1];
+                } else if (playerUrl.includes('/m3/')) {
+                    hash = playerUrl.split('/m3/')[1];
                 }
-            } catch (err) {
-                console.error('[SUBTITLE ERROR]:', err.message);
-            }
 
-            const domainMatch = playerUrl.match(/https?:\/\/([^\/]+)/);
-            const domain = domainMatch ? domainMatch[1] : 'ruplayer.org';
-            let hash = playerUrl.includes('/video/') ? playerUrl.split('/video/')[1] : '';
+                if (hash) {
+                    try {
+                        const postUrl = `https://${domain}/player/index.php?data=${hash}&do=getVideo`;
+                        const postRes = await axios.post(postUrl, `hash=${hash}&r=${encodeURIComponent(BASE_URL + '/')}`, {
+                            headers: {
+                                'User-Agent': UA,
+                                'Origin': `https://${domain}`,
+                                'Referer': playerUrl,
+                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+                                'X-Requested-With': 'XMLHttpRequest'
+                            },
+                            timeout: 3000
+                        });
 
-            if (hash) {
-                try {
-                    const postUrl = `https://${domain}/player/index.php?data=${hash}&do=getVideo`;
-                    const postRes = await axios.post(postUrl, `hash=${hash}&r=${encodeURIComponent(BASE_URL + '/')}`, {
-                        headers: {
-                            'User-Agent': UA,
-                            'Origin': `https://${domain}`,
-                            'Referer': playerUrl,
-                            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                            'X-Requested-With': 'XMLHttpRequest'
-                        },
-                        timeout: 3000
-                    });
+                        if (postRes.data && postRes.data.securedLink) {
+                            const targetMasterUrl = postRes.data.securedLink;
+                            const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(targetMasterUrl)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
 
-                    if (postRes.data && postRes.data.securedLink) {
-                        const proxyUrl = `${protocol}://${host}/proxy?url=${encodeURIComponent(postRes.data.securedLink)}&domain=${domain}&referer=${encodeURIComponent(playerUrl)}`;
+                            streams.push({
+                                title: `ZenoPlay - ${playerTitle} (Proxy)`,
+                                url: proxyUrl
+                            });
+                        } else {
+                            streams.push({
+                                title: `ZenoPlay - ${playerTitle} (Web)`,
+                                url: playerUrl
+                            });
+                        }
+                    } catch (err) {
                         streams.push({
-                            title: `ZenoPlay - ${player.title} (Proxy)`,
-                            url: proxyUrl,
-                            subtitles: extractedSubs
+                            title: `ZenoPlay - ${playerTitle} (Web)`,
+                            url: playerUrl
                         });
                     }
-                } catch (e) {
-                    streams.push({
-                        title: `ZenoPlay - ${player.title} (Web)`,
-                        url: playerUrl,
-                        subtitles: extractedSubs
-                    });
                 }
+            } else {
+                streams.push({
+                    title: `ZenoPlay - ${playerTitle} (Web)`,
+                    url: playerUrl
+                });
             }
         }
 
         return { streams };
     } catch (e) {
+        console.error(`[STREAM HANDLER ERROR]:`, e);
         return { streams: [] };
     }
 });
 
-// Прокси за видео потока
+// Интегриране на Stremio рутера в Express
+app.use(getRouter(builder.getInterface()));
+
+// Прокси рутер за HLS сегменти на същия порт
 app.get('/proxy', async (req, res) => {
     const targetUrl = req.query.url;
     const domain = req.query.domain || 'ruplayer.org';
     const referer = req.query.referer || `https://${domain}/`;
 
-    if (!targetUrl) return res.status(400).send('Missing url');
+    if (!targetUrl) {
+        return res.status(400).send('Missing url parameter');
+    }
 
     try {
         const response = await axios.get(targetUrl, {
-            headers: { 'User-Agent': UA, 'Referer': referer, 'Origin': `https://${domain}` },
-            responseType: targetUrl.includes('.m3u8') ? 'text' : 'stream'
+            headers: {
+                'User-Agent': UA,
+                'Referer': referer,
+                'Origin': `https://${domain}`
+            },
+            responseType: targetUrl.includes('.m3u8') || targetUrl.includes('playlist') ? 'text' : 'stream'
         });
 
         res.setHeader('Access-Control-Allow-Origin', '*');
 
-        if (targetUrl.includes('.m3u8') || typeof response.data === 'string') {
+        const contentType = response.headers['content-type'] || '';
+        if (targetUrl.includes('.m3u8') || contentType.includes('mpegurl') || typeof response.data === 'string') {
             res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+            
+            let m3u8Content = response.data;
+            const baseUrlObj = new URL(targetUrl);
             const host = req.headers['host'];
             const protocol = req.headers['x-forwarded-proto'] || 'https';
-            
-            const modified = response.data.split('\n').map(line => {
+
+            const modifiedLines = m3u8Content.split('\n').map(line => {
                 const trimmed = line.trim();
-                if (!trimmed || trimmed.startsWith('#')) return line;
-                let segUrl = trimmed.startsWith('http') ? trimmed : new URL(trimmed, targetUrl).toString();
-                return `${protocol}://${host}/proxy?url=${encodeURIComponent(segUrl)}&domain=${domain}&referer=${encodeURIComponent(referer)}`;
+                if (!trimmed || trimmed.startsWith('#')) {
+                    return line;
+                }
+
+                let segmentUrl = trimmed;
+                if (!segmentUrl.startsWith('http')) {
+                    segmentUrl = new URL(segmentUrl, baseUrlObj.href).toString();
+                }
+
+                return `${protocol}://${host}/proxy?url=${encodeURIComponent(segmentUrl)}&domain=${domain}&referer=${encodeURIComponent(referer)}`;
             });
-            return res.send(modified.join('\n'));
+
+            return res.send(modifiedLines.join('\n'));
         }
 
-        if (response.headers['content-type']) res.setHeader('Content-Type', response.headers['content-type']);
+        if (response.headers['content-type']) {
+            res.setHeader('Content-Type', response.headers['content-type']);
+        }
         response.data.pipe(res);
-    } catch (err) {
+
+    } catch (error) {
+        console.error(`[PROXY ERROR]:`, error.message);
         res.status(500).send('Proxy error');
     }
 });
 
-// Подобрено прокси за субтитри с .vtt разширение и изчистване на формата
-app.get('/subtitles.vtt', async (req, res) => {
-    const targetUrl = req.query.url;
-    if (!targetUrl) return res.status(400).send('Missing url');
-
-    try {
-        const response = await axios.get(targetUrl, {
-            headers: { 
-                'User-Agent': UA, 
-                'Referer': 'https://ruplayer.org/' 
-            },
-            responseType: 'text'
-        });
-
-        let subData = response.data;
-
-        // Показваме в лога първите 100 знака, за да видим какво точно връща сайтът
-        console.log(`[SUB-CONTENT PREVIEW]:`, subData.substring(0, 100));
-
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        // Задължително задаваме WebVTT хедър, за да го разпознае вградения плейър на Stremio
-        res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-        res.send(subData);
-    } catch (err) {
-        console.error('[SUB PROXY ERROR]:', err.message);
-        res.status(500).send('Sub proxy error');
-    }
-});
-
-app.use(getRouter(builder.getInterface()));
-
+// Стартиране на сървъра на единния порт за Render
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Addon & Proxy активни на порт: ${PORT}`);
+    console.log(`====================================================`);
+    console.log(` ZenoPlay Addon & Proxy активни на порт: ${PORT}`);
+    console.log(`====================================================`);
 });
